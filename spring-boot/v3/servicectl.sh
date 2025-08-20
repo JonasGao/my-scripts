@@ -6,10 +6,10 @@
 # Install
 #
 ## Project local install
-# curl -o servicectl https://raw.githubusercontent.com/JonasGao/my-configs/master/cicd/v3multi/servicectl.sh
+# curl -o servicectl https://raw.githubusercontent.com/JonasGao/my-scripts/master/spring-boot/v3/servicectl.sh
 #
 ## Global install
-# curl -o appctl https://raw.githubusercontent.com/JonasGao/my-configs/master/cicd/v3multi/servicectl.sh
+# curl -o appctl https://raw.githubusercontent.com/JonasGao/my-scripts/master/spring-boot/v3/servicectl.sh
 # install appctl /usr/local/bin
 # rm appctl
 
@@ -323,7 +323,7 @@ update-self() {
   fi
 
   # 构建下载URL
-  local download_url="${GHPROXY}https://raw.githubusercontent.com/JonasGao/my-configs/master/cicd/v3multi/servicectl.sh"
+  local download_url="${GHPROXY}https://raw.githubusercontent.com/JonasGao/my-scripts/master/spring-boot/v3/servicectl.sh"
   # 通过时间戳禁用 HTTP 缓存
   local no_cache_ts=$(date +%s)
   local download_url_nc="${download_url}?_ts=${no_cache_ts}"
