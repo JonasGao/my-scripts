@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 umask 027
+COLOR_MODE=auto
 
 usage() {
     local cmd
@@ -18,6 +19,8 @@ Options:
       --easyrsa-dir PATH   Path to easy-rsa directory (overrides auto-detect and EASYRSA_DIR)
       --crl-path PATH      Destination path of CRL (default: /etc/openvpn/crl.pem)
       --service NAME       OpenVPN systemd service to reload (default: auto-detect, then openvpn@server/openvpn)
+      --no-color           Disable colored output
+      --color MODE         Color mode: auto|always|never (default: auto)
 
 Examples:
   $cmd --yes alice
@@ -26,10 +29,53 @@ USAGE
 }
 
 log_ts() { date '+%Y-%m-%d %H:%M:%S'; }
-log_info() { printf '[%s] [INFO] %s\n' "$(log_ts)" "$*"; }
-log_warn() { printf '[%s] [WARN] %s\n' "$(log_ts)" "$*" >&2; }
-log_error() { printf '[%s] [ERROR] %s\n' "$(log_ts)" "$*" >&2; }
-log_debug() { if [ "${VERBOSE:-false}" = true ]; then printf '[%s] [DEBUG] %s\n' "$(log_ts)" "$*"; fi; }
+
+# color setup (default no color until setup_colors runs)
+C_RESET=''
+C_INFO=''
+C_WARN=''
+C_ERROR=''
+C_DEBUG=''
+USE_COLOR=false
+
+setup_colors() {
+    local mode supports=false colors=0
+    mode="${COLOR_MODE:-auto}"
+
+    if command -v tput >/dev/null 2>&1; then
+        colors="$(tput colors 2>/dev/null || echo 0)"
+    fi
+
+    if { [ -t 1 ] || [ -t 2 ]; } && [ -n "${TERM:-}" ] && [ "${TERM}" != 'dumb' ] && [ "$colors" -ge 8 ]; then
+        supports=true
+    fi
+
+    # Honor NO_COLOR env unless explicit always
+    if [ "${mode}" != 'always' ] && [ -n "${NO_COLOR:-}" ]; then
+        mode='never'
+    fi
+
+    case "$mode" in
+        always) USE_COLOR=true ;;
+        never) USE_COLOR=false ;;
+        auto|*) USE_COLOR=$supports ;;
+    esac
+
+    if [ "$USE_COLOR" = true ]; then
+        C_RESET=$'\033[0m'
+        C_INFO=$'\033[32m'
+        C_WARN=$'\033[33m'
+        C_ERROR=$'\033[31m'
+        C_DEBUG=$'\033[36m'
+    else
+        C_RESET=''; C_INFO=''; C_WARN=''; C_ERROR=''; C_DEBUG=''
+    fi
+}
+
+log_info() { printf '[%s] %b[INFO]%b %s\n' "$(log_ts)" "$C_INFO" "$C_RESET" "$*"; }
+log_warn() { printf '[%s] %b[WARN]%b %s\n' "$(log_ts)" "$C_WARN" "$C_RESET" "$*" >&2; }
+log_error() { printf '[%s] %b[ERROR]%b %s\n' "$(log_ts)" "$C_ERROR" "$C_RESET" "$*" >&2; }
+log_debug() { if [ "${VERBOSE:-false}" = true ]; then printf '[%s] %b[DEBUG]%b %s\n' "$(log_ts)" "$C_DEBUG" "$C_RESET" "$*"; fi; }
 
 run_cmd() {
     if [ "${DRY_RUN:-false}" = true ]; then
@@ -204,6 +250,9 @@ main() {
     DRY_RUN=false
     local AUTO_YES=false
 
+    # initialize colors with default mode
+    setup_colors
+
     # Parse args
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -222,6 +271,24 @@ main() {
         -y | --yes)
             AUTO_YES=true
             shift
+            ;;
+        --no-color)
+            COLOR_MODE='never'
+            shift
+            ;;
+        --color)
+            [ $# -ge 2 ] || {
+                log_error '--color requires a MODE: auto|always|never'
+                exit 2
+            }
+            case "$2" in
+                auto|always|never) COLOR_MODE="$2" ;;
+                *)
+                    log_error "Invalid --color value: $2 (expected: auto|always|never)"
+                    exit 2
+                    ;;
+            esac
+            shift 2
             ;;
         --easyrsa-dir)
             [ $# -ge 2 ] || {
@@ -270,6 +337,9 @@ main() {
         usage
         exit 2
     fi
+
+    # re-apply color choice after parsing
+    setup_colors
 
     ensure_root
     validate_username "$USERNAME"
