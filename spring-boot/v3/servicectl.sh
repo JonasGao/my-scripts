@@ -28,6 +28,24 @@ ACTION="$1"
 # 脚本版本号
 VERSION="4.3"
 
+# 多目标支持：当 start/stop/restart 传入多个服务时，逐个处理后退出
+if [ "$ACTION" = "s" ] || [ "$ACTION" = "start" ] || \
+   [ "$ACTION" = "t" ] || [ "$ACTION" = "stop" ] || \
+   [ "$ACTION" = "r" ] || [ "$ACTION" = "restart" ]; then
+  if [ $# -ge 3 ]; then
+    overall=0
+    for target in "${@:2}"; do
+      echo "==== $ACTION $target ===="
+      "$PROG_NAME" "$ACTION" "$target"
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        overall=$rc
+      fi
+    done
+    exit $overall
+  fi
+fi
+
 # 应用的工作目录
 # init 命令不强制要求参数目录已存在，未提供则使用当前目录
 if [ "$ACTION" = "i" ] || [ "$ACTION" = "init" ]; then
@@ -383,9 +401,9 @@ usage() {
 There are some commands:
   i, init
   d, deploy
-  s, start
-  t, stop
-  r, restart
+  s, start        (supports multiple services)
+  t, stop         (supports multiple services)
+  r, restart      (supports multiple services)
   p, pid
   c, check
   u, update
