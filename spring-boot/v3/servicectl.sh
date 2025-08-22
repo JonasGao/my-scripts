@@ -653,8 +653,27 @@ INIT_DIRS=("$APP_HOME" "$LOG_HOME" "$CONF_HOME" "$LIB_HOME")
 # 应用健康检查URL
 HEALTH_CHECK_URL="http://127.0.0.1:${APP_PORT}"
 
-# 健康的HTTP代码
-HEALTH_HTTP_CODE=(200 404 403 405)
+# 健康的HTTP代码（支持在 setenv.sh 中用空格分隔字符串或数组覆盖，默认: 200 404 403 405）
+if declare -p HEALTH_HTTP_CODE >/dev/null 2>&1; then
+  # 已声明：可能是数组或字符串
+  if declare -p HEALTH_HTTP_CODE 2>/dev/null | grep -q 'declare \-a'; then
+    # 是数组，但如果为空则回退默认
+    if [ ${#HEALTH_HTTP_CODE[@]} -eq 0 ]; then
+      HEALTH_HTTP_CODE=(200 404 403 405)
+    fi
+  else
+    # 是字符串：按空格拆分为数组；为空则回退默认
+    # shellcheck disable=SC2128
+    if [ -n "$HEALTH_HTTP_CODE" ]; then
+      read -r -a HEALTH_HTTP_CODE <<< "$HEALTH_HTTP_CODE"
+    else
+      HEALTH_HTTP_CODE=(200 404 403 405)
+    fi
+  fi
+else
+  # 未声明：设为默认数组
+  HEALTH_HTTP_CODE=(200 404 403 405)
+fi
 
 case "$ACTION" in
 d | deploy)
