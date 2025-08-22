@@ -506,6 +506,7 @@ Environment Variables:
   - PROC_START_TIMEOUT: Process start timeout in seconds (default: 3)
   - APP_START_TIMEOUT: Application start timeout in seconds (default: 150)
   - HEALTH_CHECK_URL: Health check URL (default: "http://127.0.0.1:${APP_PORT}")
+  - HEALTH_HTTP_CODE: Health check HTTP code (default: 200 404 403 405)
   - HEALTH_CHECK: Set to 1 to disable health check
   - SETENV_DEBUG: Set to true to enable environment loading debug output
 
