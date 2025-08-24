@@ -26,13 +26,14 @@ PROG_NAME=$0
 ACTION="$1"
 
 # 脚本版本号
-VERSION="4.5"
+VERSION="4.6"
 
-# 多目标支持：当 start/stop/restart/init 传入多个服务时，逐个处理后退出
+# 多目标支持：当 start/stop/restart/init/generate-env 传入多个服务时，逐个处理后退出
 if [ "$ACTION" = "s" ] || [ "$ACTION" = "start" ] || \
    [ "$ACTION" = "t" ] || [ "$ACTION" = "stop" ] || \
    [ "$ACTION" = "r" ] || [ "$ACTION" = "restart" ] || \
-   [ "$ACTION" = "i" ] || [ "$ACTION" = "init" ]; then
+   [ "$ACTION" = "i" ] || [ "$ACTION" = "init" ] || \
+   [ "$ACTION" = "g" ] || [ "$ACTION" = "generate-env" ]; then
   if [ $# -ge 3 ]; then
     overall=0
     for target in "${@:2}"; do
@@ -408,7 +409,7 @@ There are some commands:
   p, pid
   c, check
   u, update
-  g, generate-env  Generate setenv.sh template
+  g, generate-env  Generate setenv.sh template (supports multiple services)
 Version: %s
 """ "$PROG_NAME" "$VERSION"
 }
@@ -585,8 +586,7 @@ i | init)
   # init 不需要第二个参数
   ;;
 g | generate-env)
-  generate_env_template "$2"
-  exit 0
+  # generate-env 不需要第二个参数验证，让多目标处理逻辑处理
   ;;
 d | deploy)
   # Deploy command can have help parameters without service name
@@ -722,6 +722,9 @@ c | check)
   ;;
 i | init)
   init-dirs
+  ;;
+g | generate-env)
+  generate_env_template "$2"
   ;;
 *)
   echo -e "\033[31mError: Unknown command '$ACTION'\033[0m" >&2
