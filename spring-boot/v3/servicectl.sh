@@ -26,12 +26,13 @@ PROG_NAME=$0
 ACTION="$1"
 
 # 脚本版本号
-VERSION="4.3"
+VERSION="4.5"
 
-# 多目标支持：当 start/stop/restart 传入多个服务时，逐个处理后退出
+# 多目标支持：当 start/stop/restart/init 传入多个服务时，逐个处理后退出
 if [ "$ACTION" = "s" ] || [ "$ACTION" = "start" ] || \
    [ "$ACTION" = "t" ] || [ "$ACTION" = "stop" ] || \
-   [ "$ACTION" = "r" ] || [ "$ACTION" = "restart" ]; then
+   [ "$ACTION" = "r" ] || [ "$ACTION" = "restart" ] || \
+   [ "$ACTION" = "i" ] || [ "$ACTION" = "init" ]; then
   if [ $# -ge 3 ]; then
     overall=0
     for target in "${@:2}"; do
@@ -399,7 +400,7 @@ update-self() {
 usage() {
   printf """Usage: %s <command> <service|dir name> [jar file name]
 There are some commands:
-  i, init
+  i, init         (supports multiple services)
   d, deploy
   s, start        (supports multiple services)
   t, stop         (supports multiple services)
