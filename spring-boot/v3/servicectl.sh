@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # CD application control script.
-# Version 4.3
+# Version 4.7
 
 # Install
 #
@@ -26,7 +26,7 @@ PROG_NAME=$0
 ACTION="$1"
 
 # 脚本版本号
-VERSION="4.6"
+VERSION="4.7"
 
 # 多目标支持：当 start/stop/restart/init/generate-env 传入多个服务时，逐个处理后退出
 if [ "$ACTION" = "s" ] || [ "$ACTION" = "start" ] || \
@@ -646,7 +646,7 @@ CONF_HOME="${APP_HOME}/conf"
 [ -z "$JVM_OPTS" ] && JVM_OPTS="-server -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=$APP_HOME/logs/"
 
 # JAR 包启动的时候传递的参数
-JAR_ARGS="--server.port=${APP_PORT}"
+[ -z "$JAR_ARGS" ] && JAR_ARGS="--server.port=${APP_PORT}"
 
 # 进程启动等待时间
 [ -z "$PROC_START_TIMEOUT" ] && PROC_START_TIMEOUT=3
