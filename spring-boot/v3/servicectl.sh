@@ -127,7 +127,7 @@ health-check() {
 
     # exp_time mod 10 == 0, check process is running.
     if [ $((exp_time % 10)) -eq 0 ]; then
-      query-java-pid
+      query-java-pid --quiet
       if [ "$CURR_PID" = "" ]; then
         finish-step "App start failed. try tail application log."
         tail "${APP_LOG}"
@@ -194,14 +194,22 @@ start-application() {
 
 query-java-pid() {
   CURR_PID=
+  local quiet=false
+  if [ "$1" = "--quiet" ]; then
+    quiet=true
+  fi
   if [ -f "$PID_PATH" ]; then
     local pid
     pid=$(cat "$PID_PATH")
     if ps "$pid" >/dev/null 2>&1; then
       CURR_PID="$pid"
-      echo "Got pid ($pid) from \"$PID_PATH\""
+      if [ "$quiet" = false ]; then
+        echo "Got pid ($pid) from \"$PID_PATH\""
+      fi
     else
-      echo "PID ($pid) from \"$PID_PATH\" can not found by ps. Will search by pgrep."
+      if [ "$quiet" = false ]; then
+        echo "PID ($pid) from \"$PID_PATH\" can not found by ps. Will search by pgrep."
+      fi
       rm -f "$PID_PATH"
     fi
   fi
@@ -214,7 +222,9 @@ query-java-pid() {
     local pid_count
     pid_count=$(echo "$CURR_PID" | wc -l)
     if [ "$pid_count" -gt 1 ]; then
-      echo "WARNING: Found multiple processes, trying more precise matching"
+      if [ "$quiet" = false ]; then
+        echo "WARNING: Found multiple processes, trying more precise matching"
+      fi
       CURR_PID=$($PGREP -f "java.*-jar.*$(basename "$JAR_PATH")" -v -p "$$" 2>/dev/null)
     fi
   fi
