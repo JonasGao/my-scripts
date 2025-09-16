@@ -204,11 +204,11 @@ query-java-pid() {
     if ps "$pid" >/dev/null 2>&1; then
       CURR_PID="$pid"
       if [ "$quiet" = false ]; then
-        echo "Got pid ($pid) from \"$PID_PATH\""
+        echo "[pid] $pid from file"
       fi
     else
       if [ "$quiet" = false ]; then
-        echo "PID ($pid) from \"$PID_PATH\" can not found by ps. Will search by pgrep."
+        echo "[pid] stale file pid $pid, refetching"
       fi
       rm -f "$PID_PATH"
     fi
@@ -223,7 +223,7 @@ query-java-pid() {
     pid_count=$(echo "$CURR_PID" | wc -l)
     if [ "$pid_count" -gt 1 ]; then
       if [ "$quiet" = false ]; then
-        echo "WARNING: Found multiple processes, trying more precise matching"
+        echo "[pid] multiple matches, refining"
       fi
       CURR_PID=$($PGREP -f "java.*-jar.*$(basename "$JAR_PATH")" -v -p "$$" 2>/dev/null)
     fi
