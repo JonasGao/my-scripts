@@ -221,7 +221,7 @@ query-java-pid() {
 
   # 最后的验证，确保进程确实存在
   if [ -n "$CURR_PID" ]; then
-    if ! ps $CURR_PID >/dev/null 2>&1; then
+    if ! ps "$CURR_PID" >/dev/null 2>&1; then
       CURR_PID=
     fi
   fi
@@ -237,7 +237,7 @@ stop-application() {
 
   echo "Stopping java process ($CURR_PID)."
   times="$APP_START_TIMEOUT"
-  for e in $(seq $times); do
+  for e in $(seq "$times"); do
     sleep 1
     COST_TIME=$((times - e))
     if ps "$CURR_PID" >/dev/null; then
@@ -336,8 +336,8 @@ update-self() {
   echo "Update location: $PROG_NAME"
 
   # 创建临时文件用于下载
-  local tmp_file=$(mktemp)
-  if [ $? -ne 0 ]; then
+  local tmp_file
+  if ! tmp_file=$(mktemp); then
     echo -e "\033[31mError: Failed to create temporary file for update\033[0m" >&2
     exit 1
   fi
@@ -345,7 +345,8 @@ update-self() {
   # 构建下载URL
   local download_url="${GHPROXY}https://raw.githubusercontent.com/JonasGao/my-scripts/master/spring-boot/v3/servicectl.sh"
   # 通过时间戳禁用 HTTP 缓存
-  local no_cache_ts=$(date +%s)
+  local no_cache_ts
+  no_cache_ts=$(date +%s)
   local download_url_nc="${download_url}?_ts=${no_cache_ts}"
   echo "Downloading from: $download_url_nc"
 
@@ -552,7 +553,8 @@ load-environment() {
   fi
 
   # Check for setenv.sh in parent directory of APP_HOME
-  local parent_dir=$(dirname "$APP_HOME")
+  local parent_dir
+  parent_dir=$(dirname "$APP_HOME")
   if [ -f "$parent_dir/$SET_ENV_FILENAME" ]; then
     if [ "$SETENV_DEBUG" = true ]; then
       echo "Loading environment from $parent_dir/$SET_ENV_FILENAME"
