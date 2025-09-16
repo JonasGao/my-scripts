@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # CD application control script.
-# Version 4.7
+# Version 4.8
 
 # Install
 #
@@ -26,7 +26,7 @@ PROG_NAME=$0
 ACTION="$1"
 
 # 脚本版本号
-VERSION="4.7"
+VERSION="4.8"
 
 # 多目标支持：当 start/stop/restart/init/generate-env 传入多个服务时，逐个处理后退出
 if [ "$ACTION" = "s" ] || [ "$ACTION" = "start" ] || \
