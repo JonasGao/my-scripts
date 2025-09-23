@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# 检查参数
+if [ $# -lt 1 ]; then
+    echo "用法: $0 <image_name:tag> [image_name:tag...]"
+    exit 1
+fi
+
+REMOTE_HOST="debian@172.16.201.12"
+REGISTRY_HOST="172.16.201.11:5000"
+LOCAL_REGISTRY="127.0.0.1:5000"
+
+TOTAL_IMAGES=$#
+CURRENT_IMAGE=1
+
+# 循环处理所有传入的镜像参数
+for IMAGE_NAME in "$@"; do
+    echo "正在处理第 ${CURRENT_IMAGE}/${TOTAL_IMAGES} 个镜像: ${IMAGE_NAME}"
+
+    # 在远程服务器上执行 proxy 命令拉取镜像
+    ssh "${REMOTE_HOST}" "/home/debian/bin/proxy ${IMAGE_NAME}"
+
+    # 推送到本地仓库
+    xpull -r "${REGISTRY_HOST}/${IMAGE_NAME}"
+
+    echo "完成第 ${CURRENT_IMAGE}/${TOTAL_IMAGES} 个镜像: ${LOCAL_REGISTRY}/${IMAGE_NAME}"
+    echo "----------------------------------------"
+    
+    ((CURRENT_IMAGE++))
+done
+
+echo "所有镜像同步完成！"
