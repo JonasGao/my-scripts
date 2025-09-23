@@ -1,5 +1,51 @@
 #!/bin/bash
 
+# -------------------------------------------------------------
+# 脚本名称: xpull
+# 功能概述:
+#   批量处理并推送 Docker 镜像到一个或多个本地/私有仓库。
+#   支持：
+#     - 可选先行 docker pull 拉取源镜像
+#     - 可选移除镜像名称中的首个域名段（便于重写仓库前缀）
+#     - 从 docker daemon.json 自动检测不安全仓库列表
+#     - 推送完成后可选清理本地镜像（含中间 tag）
+#
+# 使用方法:
+#   xpull [-r] [-a] [-p] [-c] <image[:tag]> [image[:tag] ...]
+#
+# 参数说明:
+#   -r  移除镜像名称最前面的域名段（如 docker.io/library/nginx → library/nginx）
+#   -a  自动从 daemon.json 读取 insecure-registries 作为目标仓库列表
+#   -p  在推送前先执行 docker pull 源镜像（默认不拉取）
+#   -c  推送完成后清理本地镜像及标记（默认不清理）
+#   -h  显示帮助
+#
+# 环境变量:
+#   LOCAL_REGISTRIES  逗号分隔的仓库地址列表（默认: 127.0.0.1:5000）
+#                     例: 127.0.0.1:5000,192.168.1.100:5000
+#
+# 依赖项:
+#   - docker 必需
+#   - jq（仅当使用 -a 自动检测时需要）
+#
+# 适用场景:
+#   - 将公共镜像或任意源镜像快速同步到内网私有仓库
+#   - 一次推送到多个目标仓库
+#
+# 示例:
+#   xpull docker.io/library/nginx:latest
+#   xpull -r docker.io/library/nginx:latest docker.io/library/redis:latest
+#   xpull -a nginx:latest redis:latest postgres:latest
+#   LOCAL_REGISTRIES=127.0.0.1:5000,192.168.1.100:5000 xpull nginx:alpine
+#
+# 退出码:
+#   0 表示全部镜像处理成功；非 0 表示过程中存在失败
+#
+# 注意事项:
+#   - 建议确保对目标仓库已登录（docker login）
+#   - 使用 -a 时需保证能读取到系统的 daemon.json 并安装 jq
+# -------------------------------------------------------------
+
 # 定义颜色
 GREEN='\033[0;32m'
 BLUE='\033[0;94m'
