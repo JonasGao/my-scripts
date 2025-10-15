@@ -67,6 +67,35 @@ function Get-FileContent {
     }
 }
 
+# 函数：确保配置中包含某行指令（若已存在同类指令则不追加）
+function Add-DirectiveIfMissing {
+    param(
+        [string]$ConfigContent,
+        [string]$DirectiveKey,
+        [string]$DirectiveLine
+    )
+
+    # 将配置拆分为行，忽略以 # 或 ; 开头的注释行，仅匹配有效指令行
+    $lines = $ConfigContent -split "`r?`n"
+    $exists = $false
+    foreach ($line in $lines) {
+        $trim = $line.TrimStart()
+        if ($trim -match '^(#|;)' ) { continue }
+        if ($trim -imatch "^\Q$DirectiveKey\E\b") {
+            $exists = $true
+            break
+        }
+    }
+
+    if ($exists) {
+        Write-Host "已存在指令: $DirectiveKey，跳过追加" -ForegroundColor DarkYellow
+        return $ConfigContent
+    }
+
+    Write-Host "追加指令: $DirectiveLine" -ForegroundColor DarkGreen
+    return ($ConfigContent.TrimEnd() + "`n`n$DirectiveLine")
+}
+
 # 函数：合并文件内容到配置中
 function Merge-FileToConfig {
     param(
@@ -167,6 +196,10 @@ try {
     Copy-Item $ConfigFile $BackupFile
     Write-Host "已创建备份文件: $BackupFile" -ForegroundColor Green
     
+    # 在保存前追加所需的TLS相关指令（若不存在同类指令则不追加）
+    $ConfigContent = Add-DirectiveIfMissing -ConfigContent $ConfigContent -DirectiveKey "tls-cipher" -DirectiveLine "tls-cipher \"DEFAULT:@SECLEVEL=0\""
+    $ConfigContent = Add-DirectiveIfMissing -ConfigContent $ConfigContent -DirectiveKey "tls-version-min" -DirectiveLine "tls-version-min 1.0"
+
     # 保存合并后的内容
     Set-Content -Path $ConfigFile -Value $ConfigContent -Encoding UTF8
     Write-Host "配置文件已成功更新: $ConfigFile" -ForegroundColor Green
