@@ -11,8 +11,16 @@ foreach ($domain in $Domains) {
     $cert = $null
     $tcpClient = $null
     $sslStream = $null
+    $ipAddress = "N/A"
 
     try {
+        # 解析域名获取IP地址
+        try {
+            $ipAddress = [System.Net.Dns]::GetHostEntry($domain).AddressList[0].IPAddressToString
+        } catch {
+            $ipAddress = "解析失败"
+        }
+
         # 创建TCP连接
         $tcpClient = New-Object System.Net.Sockets.TcpClient
         # 使用异步连接方法实现超时
@@ -51,6 +59,7 @@ foreach ($domain in $Domains) {
     if ($errorMsg -or -not $cert) {
         $results += [PSCustomObject]@{
             域名       = $domain
+            IP地址     = $ipAddress
             开始时间   = "N/A"
             开始年份   = "N/A"
             结束时间   = "N/A"
@@ -98,6 +107,7 @@ foreach ($domain in $Domains) {
     # 添加到结果集
     $results += [PSCustomObject]@{
         域名       = $domain
+        IP地址     = $ipAddress
         开始时间   = $notBefore.ToString("yyyy-MM-dd HH:mm:ss")
         开始年份   = $startYear
         结束时间   = $notAfter.ToString("yyyy-MM-dd HH:mm:ss")
@@ -114,6 +124,7 @@ $formattedResults = $results | ForEach-Object {
     # 创建一个新对象，保留原始对象的属性
     $obj = [PSCustomObject]@{
         域名 = $_.域名
+        IP地址 = $_.IP地址
         开始时间 = $_.开始时间
         开始年份 = $_.开始年份
         结束时间 = $_.结束时间
@@ -129,7 +140,7 @@ $formattedResults = $results | ForEach-Object {
 # 定义表格格式
 $formatParams = @{
     AutoSize = $true
-    Property = '域名', '开始年份', '结束年份', '开始时间', '结束时间', '剩余天数', '状态'
+    Property = '域名', 'IP地址', '开始年份', '结束年份', '开始时间', '结束时间', '剩余天数', '状态'
 }
 
 # 输出表格
