@@ -81,7 +81,7 @@ function Add-DirectiveIfMissing {
     foreach ($line in $lines) {
         $trim = $line.TrimStart()
         if ($trim -match '^(#|;)' ) { continue }
-        if ($trim -imatch "^\Q$DirectiveKey\E\b") {
+        if ($trim -imatch ('^{0}\b' -f [regex]::Escape($DirectiveKey))) {
             $exists = $true
             break
         }
@@ -197,7 +197,7 @@ try {
     Write-Host "已创建备份文件: $BackupFile" -ForegroundColor Green
     
     # 在保存前追加所需的TLS相关指令（若不存在同类指令则不追加）
-    $ConfigContent = Add-DirectiveIfMissing -ConfigContent $ConfigContent -DirectiveKey "tls-cipher" -DirectiveLine "tls-cipher \"DEFAULT:@SECLEVEL=0\""
+    $ConfigContent = Add-DirectiveIfMissing -ConfigContent $ConfigContent -DirectiveKey "tls-cipher" -DirectiveLine "tls-cipher `"DEFAULT:@SECLEVEL=0`""
     $ConfigContent = Add-DirectiveIfMissing -ConfigContent $ConfigContent -DirectiveKey "tls-version-min" -DirectiveLine "tls-version-min 1.0"
 
     # 保存合并后的内容
