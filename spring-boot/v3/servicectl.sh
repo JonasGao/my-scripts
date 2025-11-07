@@ -155,7 +155,25 @@ print-info() {
   echo "  java:  $JAVA"
   echo "  opts:  ${JVM_OPTS}"
   echo "  jar:   ${JAR_PATH}"
-  echo "  args:  ${JAR_ARGS}"
+  echo "  args:  ${JAR_ARGS[*]}"
+}
+
+init-jar-args-with-port() {
+  # 如果设置了 APP_PORT，检查并追加到 JAR_ARGS
+  if [ -n "$APP_PORT" ]; then
+    # 检查 JAR_ARGS 中是否已包含 --server.port
+    local has_port=false
+    for arg in "${JAR_ARGS[@]}"; do
+      if [[ "$arg" == --server.port=* ]] || [[ "$arg" == --server.port ]]; then
+        has_port=true
+        break
+      fi
+    done
+    # 如果没有包含，则追加
+    if [ "$has_port" = false ]; then
+      JAR_ARGS+=("--server.port=${APP_PORT}")
+    fi
+  fi
 }
 
 start-application() {
@@ -166,8 +184,9 @@ start-application() {
       exit 5
     fi
     cd "$APP_HOME" || exit 7
+    init-jar-args-with-port
     print-info | tee "${LOG_HOME}/version.info"
-    ${NOHUP} ${JAVA} ${JVM_OPTS} -jar ${JAR_PATH} ${JAR_ARGS} >${STD_OUT} 2>&1 &
+    ${NOHUP} ${JAVA} ${JVM_OPTS} -jar ${JAR_PATH} "${JAR_ARGS[@]}" >${STD_OUT} 2>&1 &
     local PID=$!
     local NOHUP_RET=$?
     local RET=99
@@ -455,6 +474,9 @@ generate_env_template() {
 # JVM_OPTS="-server -Xmx1g -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=$APP_HOME/logs/"
 
 # JAR arguments (default: "--server.port=${APP_PORT}")
+# Support array or space-separated string
+# JAR_ARGS=("--server.port=${APP_PORT}" "--spring.profiles.active=prod")
+# or
 # JAR_ARGS="--server.port=${APP_PORT} --spring.profiles.active=prod"
 
 # Process start timeout in seconds (default: 3)
@@ -533,7 +555,7 @@ Environment Variables:
   - JAR_NAME: Application JAR name (default: app)
   - APP_PORT: Port on which the application runs (default: 8080)
   - JVM_OPTS: JVM options (default: "-server -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=$APP_HOME/logs/")
-  - JAR_ARGS: Arguments passed to the JAR file (default: "--server.port=${APP_PORT}")
+  - JAR_ARGS: Arguments passed to the JAR file (default: "--server.port=${APP_PORT}"). Supports array or space-separated string.
   - PROC_START_TIMEOUT: Process start timeout in seconds (default: 3)
   - APP_START_TIMEOUT: Application start timeout in seconds (default: 150)
   - HEALTH_CHECK_URL: Health check URL (default: "http://127.0.0.1:${APP_PORT}")
@@ -657,9 +679,6 @@ CONF_HOME="${APP_HOME}/conf"
 # JVM 配置参数
 [ -z "$JVM_OPTS" ] && JVM_OPTS="-server -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=$APP_HOME/logs/"
 
-# JAR 包启动的时候传递的参数
-[ -z "$JAR_ARGS" ] && JAR_ARGS="--server.port=${APP_PORT}"
-
 # 进程启动等待时间
 [ -z "$PROC_START_TIMEOUT" ] && PROC_START_TIMEOUT=3
 
@@ -704,6 +723,28 @@ if declare -p HEALTH_HTTP_CODE >/dev/null 2>&1; then
 else
   # 未声明：设为默认数组
   HEALTH_HTTP_CODE=(200 404 403 405)
+fi
+
+# JAR 参数（支持在 setenv.sh 中用空格分隔字符串或数组覆盖，默认: "--server.port=${APP_PORT}"）
+if declare -p JAR_ARGS >/dev/null 2>&1; then
+  # 已声明：可能是数组或字符串
+  if declare -p JAR_ARGS 2>/dev/null | grep -q 'declare \-a'; then
+    # 是数组，但如果为空则回退默认
+    if [ ${#JAR_ARGS[@]} -eq 0 ]; then
+      JAR_ARGS=("--server.port=${APP_PORT}")
+    fi
+  else
+    # 是字符串：按空格拆分为数组；为空则回退默认
+    # shellcheck disable=SC2128
+    if [ -n "$JAR_ARGS" ]; then
+      read -r -a JAR_ARGS <<< "$JAR_ARGS"
+    else
+      JAR_ARGS=("--server.port=${APP_PORT}")
+    fi
+  fi
+else
+  # 未声明：设为默认数组
+  JAR_ARGS=("--server.port=${APP_PORT}")
 fi
 
 case "$ACTION" in
