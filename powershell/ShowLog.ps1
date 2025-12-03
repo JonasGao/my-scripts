@@ -1,14 +1,16 @@
 # PowerShell script to connect to dev environment and view logs
 # 连接到 dev 服务器，切换目录并查看日志文件
 
-# 统一的 SSH 目标服务器
-$SshTarget = "dev"
-
-# 统一的远程路径前缀
-$RemoteBasePath = "/home/deployer/retail"
+# SSH目标服务器配置（包含SSH目标和对应的远程路径前缀）
+$SshTargets = @{
+    "dev" = "/home/deployer/retail"
+    "test" = "/home/deployer/retail"
+    "staging" = "/home/deployer/retail"
+}
 
 function Show-ToolMenu {
     param(
+        [string]$SshTarget,
         [string]$ServerName,
         [string]$LogPath
     )
@@ -20,6 +22,7 @@ function Show-ToolMenu {
     # 菜单循环
     while ($true) {
         Clear-Host
+        Write-Host "SSH目标: $SshTarget" -ForegroundColor Yellow
         Write-Host "已选择服务器: $ServerName" -ForegroundColor Green
         Write-Host "请选择查看日志的工具:" -ForegroundColor Green
         Write-Host "↑↓ 选择选项，回车确认" -ForegroundColor Gray
@@ -72,6 +75,11 @@ function Show-ToolMenu {
 }
 
 function Show-InteractiveMenu {
+    param(
+        [string]$SshTarget,
+        [string]$RemoteBasePath
+    )
+    
     # 定义选项
     $options = @("疯摩云 - ACCOUNT", "疯摩云 - SERVICE", "疯摩云 - BINLOG", "OPENAPI")
     $selected = 0
@@ -79,6 +87,7 @@ function Show-InteractiveMenu {
     # 菜单循环
     while ($true) {
         Clear-Host
+        Write-Host "SSH目标: $SshTarget" -ForegroundColor Yellow
         Write-Host "请选择要连接的服务器:" -ForegroundColor Green
         Write-Host "↑↓ 选择选项，回车确认" -ForegroundColor Gray
         Write-Host ""
@@ -109,19 +118,19 @@ function Show-InteractiveMenu {
                 # 处理选择
                 switch ($selected) {
                     0 { # 疯摩云 - ACCOUNT
-                        Show-ToolMenu -ServerName "疯摩云 - ACCOUNT" -LogPath "$RemoteBasePath/account/logs"
+                        Show-ToolMenu -SshTarget $SshTarget -ServerName "疯摩云 - ACCOUNT" -LogPath "$RemoteBasePath/account/logs"
                         return # 正常退出
                     }
                     1 { # 疯摩云 - SERVICE
-                        Show-ToolMenu -ServerName "疯摩云 - SERVICE" -LogPath "$RemoteBasePath/service/logs"
+                        Show-ToolMenu -SshTarget $SshTarget -ServerName "疯摩云 - SERVICE" -LogPath "$RemoteBasePath/service/logs"
                         return # 正常退出
                     }
                     2 { # 疯摩云 - BINLOG
-                        Show-ToolMenu -ServerName "疯摩云 - BINLOG" -LogPath "$RemoteBasePath/binlog/logs"
+                        Show-ToolMenu -SshTarget $SshTarget -ServerName "疯摩云 - BINLOG" -LogPath "$RemoteBasePath/binlog/logs"
                         return # 正常退出
                     }
                     3 { # OPENAPI
-                        Show-ToolMenu -ServerName "OPENAPI" -LogPath "$RemoteBasePath/openapi/logs"
+                        Show-ToolMenu -SshTarget $SshTarget -ServerName "OPENAPI" -LogPath "$RemoteBasePath/openapi/logs"
                         return # 正常退出
                     }
                     default {
@@ -138,5 +147,52 @@ function Show-InteractiveMenu {
     }
 }
 
-# 调用交互式菜单
-Show-InteractiveMenu
+function Show-SshTargetMenu {
+    # 获取SSH目标列表
+    $sshTargetList = $SshTargets.Keys | Sort-Object
+    $selected = 0
+    
+    # 菜单循环
+    while ($true) {
+        Clear-Host
+        Write-Host "请选择SSH目标服务器:" -ForegroundColor Green
+        Write-Host "↑↓ 选择选项，回车确认" -ForegroundColor Gray
+        Write-Host ""
+        
+        # 显示所有选项
+        for ($i = 0; $i -lt $sshTargetList.Count; $i++) {
+            $target = $sshTargetList[$i]
+            $path = $SshTargets[$target]
+            if ($i -eq $selected) {
+                Write-Host "> $target ($path)" -ForegroundColor Cyan
+            } else {
+                Write-Host "  $target ($path)" -ForegroundColor White
+            }
+        }
+        
+        # 读取按键输入
+        $key = $host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        
+        # 处理按键
+        switch ($key.VirtualKeyCode) {
+            38 { # 上箭头
+                $selected--
+                if ($selected -lt 0) { $selected = $sshTargetList.Count - 1 }
+            }
+            40 { # 下箭头
+                $selected++
+                if ($selected -ge $sshTargetList.Count) { $selected = 0 }
+            }
+            13 { # 回车键
+                # 处理选择
+                $selectedTarget = $sshTargetList[$selected]
+                $selectedPath = $SshTargets[$selectedTarget]
+                Show-InteractiveMenu -SshTarget $selectedTarget -RemoteBasePath $selectedPath
+                return # 正常退出
+            }
+        }
+    }
+}
+
+# 调用SSH目标选择菜单
+Show-SshTargetMenu
