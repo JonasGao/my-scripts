@@ -1,0 +1,44 @@
+﻿#!/bin/bash
+
+shopt -s extglob
+
+cwd=$(pwd)
+target=${1}
+
+ls ${target} | while read dirname; do
+  gitRepo="${target}/${dirname}"
+  gitDir="${gitRepo}/.git"
+  if [[ -d ${gitDir} ]]; then
+
+    cd ${gitRepo}
+    gitRemoteUrl=$(git config --get remote.origin.url)
+    cd ${cwd}
+
+    if [[ ${gitRemoteUrl} == https://* ]]; then
+      # rm https:// prefix
+      temp=${gitRemoteUrl/https:\/\//}
+      # split by '/'
+      group=(${temp//\// })
+      # build mv to parent path
+      mv_to_parent="${HOME}/${group[0]}/${group[1]}"
+      # create mv to parent path
+      mkdir -p ${mv_to_parent}
+      # mv the git repo
+      mv ${gitRepo} ${mv_to_parent}
+    elif [[ ${gitRemoteUrl} == git@* ]]; then
+      # rm prefix
+      temp=${gitRemoteUrl/git@/}
+      # replace ':'
+      temp=${temp/:/\/}
+      # split by '/'
+      group=(${temp//\// })
+      # build mv to parent path
+      mv_to_parent="${HOME}/${group[0]}/${group[1]}"
+      # create mv to parent path
+      mkdir -p ${mv_to_parent}
+      # mv the git repo
+      mv ${gitRepo} ${mv_to_parent}
+    fi
+
+  fi
+done
