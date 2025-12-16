@@ -65,6 +65,7 @@ foreach ($domain in $Domains) {
             结束时间   = "N/A"
             结束年份   = "N/A"
             剩余天数   = "N/A"
+            签发机构   = "N/A"
             状态       = $errorMsg
             表情       = "❌"
         }
@@ -82,6 +83,9 @@ foreach ($domain in $Domains) {
     $startYear = $notBefore.Year
     $endYear = $notAfter.Year
 
+    # 获取签发机构信息
+    $issuer = $cert.Issuer
+    
     # 确定过期状态和表情
     if ($daysLeft -le 0) {
         $emoji = "🔴"
@@ -113,6 +117,7 @@ foreach ($domain in $Domains) {
         结束时间   = $notAfter.ToString("yyyy-MM-dd HH:mm:ss")
         结束年份   = $endYear
         剩余天数   = $daysLeft
+        签发机构   = $issuer
         状态       = "$emoji $status"
         表情       = $emoji
     }
@@ -130,6 +135,7 @@ $formattedResults = $results | ForEach-Object {
         结束时间 = $_.结束时间
         结束年份 = $_.结束年份
         剩余天数 = $_.剩余天数
+        签发机构 = $_.签发机构
         状态 = $_.状态
         表情 = $_.表情  # 保留表情信息
     }
@@ -140,7 +146,7 @@ $formattedResults = $results | ForEach-Object {
 # 定义表格格式
 $formatParams = @{
     AutoSize = $true
-    Property = '域名', 'IP地址', '开始年份', '结束年份', '开始时间', '结束时间', '剩余天数', '状态'
+    Property = '域名', 'IP地址', '开始年份', '结束年份', '开始时间', '结束时间', '剩余天数', '签发机构', '状态'
 }
 
 # 输出表格
