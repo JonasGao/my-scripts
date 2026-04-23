@@ -1,0 +1,973 @@
+#!/bin/bash
+
+VERSION="v1.19.24"
+MIRROR="${MIRROR:-https://mirror.ghproxy.com/}"
+
+# 系统级目录（FHS 标准）
+INSTALL_DIR="/usr/local/bin"
+CONFIG_DIR="/etc/mihomo"
+CACHE_DIR="/var/cache/mihomo"
+SYSTEMD_DIR="/etc/systemd/system"
+CONFIG_REPO_DIR="${CONFIG_DIR}/profiles"
+UI_DIR="${CONFIG_DIR}/ui"
+LOG_DIR="/var/log/mihomo"
+
+UI_REPO="https://github.com/Zephyruso/zashboard/releases/download/latest/dist-no-fonts.zip"
+VERBOSE="${VERBOSE:-0}"
+
+# XDG 数据目录（存储配置源）
+XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+SOURCES_FILE="${XDG_DATA_HOME}/mihomo/sources.conf"
+
+get_sources_file() {
+    local data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
+    mkdir -p "$data_dir/mihomo"
+    echo "${data_dir}/mihomo/sources.conf"
+}
+
+log_info() { echo "[INFO] $1"; }
+log_error() { echo "[ERROR] $1" >&2; }
+log_debug() { [[ "$VERBOSE" = "1" ]] && echo "[DEBUG] $1"; }
+
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        log_error "This script must be run as root. Use: sudo mihomoctl $*"
+        exit 1
+    fi
+}
+
+check_deps() {
+    local missing=""
+    for cmd in curl gunzip jq grep sed; do
+        command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
+    done
+    if [ -n "$missing" ]; then
+        log_error "Missing commands:$missing"
+        exit 1
+    fi
+}
+check_deps
+
+# 特定命令需要 root 权限
+case "${1:-}" in
+    install|uninstall|start|stop|restart|enable|disable|ui)
+        check_root "$@"
+        ;;
+    config)
+        case "${2:-}" in
+            download|select)
+                check_root "$@"
+                ;;
+            add|remove|list)
+                ;;
+        esac
+        ;;
+    status|--help|-h)
+        ;;
+esac
+
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64)     MIRROR_ARCH="linux-amd64" ;;
+    aarch64|arm64) MIRROR_ARCH="linux-arm64" ;;
+    *)          log_error "Unsupported architecture: $ARCH"; exit 1 ;;
+esac
+
+get_cache_path() {
+    local url="$1"
+    local filename=$(basename "$url" | sed 's/?.*//')
+    echo "${CACHE_DIR}/${filename}"
+}
+
+get_uncompressed_path() {
+    local cached_gz="$1"
+    echo "${cached_gz%.gz}.bin"
+}
+
+ensure_allow_lan() {
+    local config_file="$1"
+    
+    if [ ! -f "$config_file" ]; then
+        log_error "Config file not found: $config_file"
+        return 1
+    fi
+    
+    # 检查是否已经有 allow-lan 配置
+    if grep -q "^allow-lan:" "$config_file" 2>/dev/null; then
+        # 更新现有的 allow-lan 为 true
+        sed -i 's/^allow-lan:.*$/allow-lan: true/' "$config_file"
+        log_debug "Updated allow-lan to true"
+    else
+        # 添加 allow-lan: true（在配置开头，作为重要配置）
+        sed -i '1i allow-lan: true' "$config_file"
+        log_debug "Added allow-lan: true"
+    fi
+}
+
+curl_progress() {
+    local url="$1"
+    local output="$2"
+    local force_download="${3:-0}"
+    mkdir -p "$CACHE_DIR"
+    
+    local cached_file=$(get_cache_path "$url")
+    local uncached_file=$(get_uncompressed_path "$cached_file")
+
+    log_info "Downloading: $url"
+
+    # 如果强制下载，跳过缓存检查
+    if [ "$force_download" = "0" ]; then
+        if [ -f "$uncached_file" ]; then
+            log_info "Cache found: $uncached_file (decompressed binary)"
+            cp "$uncached_file" "$output"
+            return 0
+        fi
+
+        if [ -f "$cached_file" ]; then
+            log_info "Cache found: $cached_file (compressed)"
+            cp "$cached_file" "$output"
+            return 0
+        fi
+    else
+        log_info "Force download: ignoring cache"
+    fi
+
+    curl -k -L -# --connect-timeout 30 -m 60 -o "$output" "$url" || {
+        local err=$?
+        log_error "curl failed with code $err"
+        return $err
+    }
+
+    if [ -f "$output" ]; then
+        cp "$output" "$cached_file"
+        log_info "Cached: $cached_file"
+    fi
+}
+
+
+cache_uncompressed() {
+    local gz_file="$1"
+    local bin_file=$(get_uncompressed_path "$gz_file")
+
+    if [ ! -f "$bin_file" ]; then
+        gunzip -c "$gz_file" > "$bin_file"
+        chmod +x "$bin_file"
+        log_info "Cached binary: $bin_file"
+    fi
+}
+
+do_install() {
+    local force_download=0
+    
+    # 解析参数
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -f|--force)
+                force_download=1
+                log_info "Force download enabled"
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+    
+    log_info "Starting mihomo user-level installation..."
+    log_info "Version: $VERSION, Arch: $MIRROR_ARCH"
+
+    local url="${MIRROR}https://github.com/MetaCubeX/mihomo/releases/download/${VERSION}/mihomo-${MIRROR_ARCH}-v2-${VERSION}.gz"
+    local tmpfile=$(mktemp)
+    log_debug "Temp file: $tmpfile"
+
+    trap "rm -f '$tmpfile' '${tmpfile}.uncompressed'" EXIT
+
+    log_info "Downloading mihomo binary..."
+    if ! curl_progress "$url" "$tmpfile" "$force_download"; then
+        log_error "Mirror failed, trying direct..."
+        url="https://github.com/MetaCubeX/mihomo/releases/download/${VERSION}/mihomo-${MIRROR_ARCH}-v2-${VERSION}.gz"
+        curl_progress "$url" "$tmpfile" "$force_download" || {
+            log_error "Download failed"
+            exit 1
+        }
+    fi
+
+    log_info "Processing binary..."
+    local binary_file="$tmpfile"
+    local file_type=$(file "$tmpfile" 2>/dev/null || echo "unknown")
+    
+    if echo "$file_type" | grep -q "gzip"; then
+        log_debug "File is gzip format, decompressing..."
+        gunzip -c "$tmpfile" > "${tmpfile}.uncompressed" 2>/dev/null || {
+            log_error "Decompress failed"
+            exit 1
+        }
+
+        local cached_gz=$(get_cache_path "$url")
+        if [ ! -f "$cached_gz" ]; then
+            cp "$tmpfile" "$cached_gz"
+            log_info "Cached: $cached_gz"
+        fi
+        cache_uncompressed "$cached_gz"
+
+        binary_file="${tmpfile}.uncompressed"
+    else
+        log_debug "File is already in binary format (from cache)"
+    fi
+    
+    if [ ! -f "$binary_file" ]; then
+        log_error "Binary file not found: $binary_file"
+        exit 1
+    fi
+
+    log_debug "Binary size: $(du -h "$binary_file" | cut -d' ' -f1)"
+
+    mkdir -p "$INSTALL_DIR"
+    log_info "Installing to ${INSTALL_DIR}..."
+    chmod +x "$binary_file"
+    mv "$binary_file" "${INSTALL_DIR}/mihomo" || {
+        log_error "Failed to install mihomo"
+        exit 1
+    }
+    trap - EXIT
+    log_info "Installed: $(du -h "${INSTALL_DIR}/mihomo" | cut -d' ' -f1)"
+
+    mkdir -p "$CONFIG_DIR" "$CONFIG_REPO_DIR"
+    log_info "Creating config directory ${CONFIG_DIR}..."
+
+    if [ ! -f "${CONFIG_DIR}/config.yaml" ]; then
+        cat > "${CONFIG_DIR}/config.yaml" << 'EOF'
+mixed-port: 7890
+allow-lan: true
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
+EOF
+        log_info "Created default config: ${CONFIG_DIR}/config.yaml"
+    fi
+
+    mkdir -p "$SYSTEMD_DIR"
+    log_info "Installing systemd system service..."
+    cat > "${SYSTEMD_DIR}/mihomo.service" << EOF
+[Unit]
+Description=mihomo proxy service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${INSTALL_DIR}/mihomo -f ${CONFIG_DIR}/config.yaml
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload 2>/dev/null || true
+    
+    log_info "Installation complete!"
+    echo ""
+    echo "Start mihomo:"
+    echo "  sudo mihomoctl start"
+}
+
+do_config() {
+    local subcommand="${1:-}"
+    
+    if [ -z "$subcommand" ]; then
+        log_info "Available commands:"
+        echo "  mihomoctl config add <name> <server> <token>  - Add profile source"
+        echo "  mihomoctl config remove <name>                - Remove profile source"
+        echo "  mihomoctl config list                         - List sources and profiles"
+        echo "  mihomoctl config download <source> <profile>  - Download profile from source"
+        echo "  mihomoctl config select <file>                - Apply profile file"
+        return 0
+    fi
+    
+    case "$subcommand" in
+        add)
+            do_config_add "$2" "$3" "$4"
+            ;;
+        remove)
+            do_config_remove "$2"
+            ;;
+        list)
+            do_config_list
+            ;;
+        download)
+            do_config_download "$2" "$3"
+            ;;
+        select)
+            do_config_select "$2"
+            ;;
+        *)
+            log_error "Unknown config command: $subcommand"
+            return 1
+            ;;
+    esac
+}
+
+do_config_add() {
+    local name="${1:-}"
+    local server="${2:-}"
+    local token="${3:-}"
+    
+    if [ -z "$name" ] || [ -z "$server" ] || [ -z "$token" ]; then
+        log_error "Missing arguments"
+        echo "Usage: mihomoctl config add <name> <server_url> <token>"
+        echo ""
+        echo "Example:"
+        echo "  mihomoctl config add mysub https://sub.example.com/api mytoken123"
+        return 1
+    fi
+    
+    local sources_file=$(get_sources_file)
+    mkdir -p "$(dirname "$sources_file")"
+    
+    if [ -f "$sources_file" ] && grep -q "^${name}|" "$sources_file"; then
+        log_error "Source '$name' already exists"
+        echo "Use 'mihomoctl config remove $name' to remove it first"
+        return 1
+    fi
+    
+    echo "${name}|${server}|${token}" >> "$sources_file"
+    log_info "Added source: $name"
+    log_debug "Server: $server"
+    echo ""
+    echo "Sources file: $sources_file"
+    echo ""
+    echo "Download profile:"
+    echo "  mihomoctl config download $name <profile_name>"
+}
+
+do_config_remove() {
+    local name="${1:-}"
+    
+    if [ -z "$name" ]; then
+        log_error "Source name required"
+        echo "Usage: mihomoctl config remove <name>"
+        return 1
+    fi
+    
+    local sources_file=$(get_sources_file)
+    
+    if [ ! -f "$sources_file" ]; then
+        log_error "No sources configured"
+        return 1
+    fi
+    
+    if ! grep -q "^${name}|" "$sources_file"; then
+        log_error "Source '$name' not found"
+        return 1
+    fi
+    
+    sed -i "/^${name}|/d" "$sources_file"
+    log_info "Removed source: $name"
+}
+
+do_config_list() {
+    local sources_file=$(get_sources_file)
+    
+    echo ""
+    echo "=== Profile Sources ==="
+    echo ""
+    
+    if [ -f "$sources_file" ] && [ -s "$sources_file" ]; then
+        echo "Configured sources:"
+        while IFS='|' read -r name server token; do
+            echo "  $name"
+            echo "    Server: $server"
+        done < "$sources_file"
+    else
+        echo "No sources configured"
+        echo ""
+        echo "Add a source:"
+        echo "  mihomoctl config add <name> <server_url> <token>"
+    fi
+    
+    echo ""
+    echo "=== Downloaded Profiles ==="
+    echo ""
+    
+    if [ -d "$CONFIG_REPO_DIR" ] && [ -n "$(ls -A "$CONFIG_REPO_DIR" 2>/dev/null)" ]; then
+        ls -lh "$CONFIG_REPO_DIR" | tail -n +2 | awk '{printf "  %s (%s)\n", $9, $5}'
+    else
+        echo "  (no profiles downloaded yet)"
+    fi
+    
+    echo ""
+    echo "Sources file: $sources_file"
+}
+
+do_config_download() {
+    local source_name="${1:-}"
+    local profile_name="${2:-}"
+    
+    if [ -z "$source_name" ]; then
+        log_error "Source name required"
+        echo "Usage: mihomoctl config download <source_name> <profile_name>"
+        return 1
+    fi
+    
+    if [ -z "$profile_name" ]; then
+        log_error "Profile name required"
+        echo "Usage: mihomoctl config download <source_name> <profile_name>"
+        return 1
+    fi
+    
+    local sources_file=$(get_sources_file)
+    
+    if [ ! -f "$sources_file" ]; then
+        log_error "No sources configured"
+        echo "Add a source first: mihomoctl config add <name> <server> <token>"
+        return 1
+    fi
+    
+    local source_line=$(grep "^${source_name}|" "$sources_file")
+    if [ -z "$source_line" ]; then
+        log_error "Source '$source_name' not found"
+        echo "Available sources:"
+        cut -d'|' -f1 "$sources_file" | sed 's/^/  /'
+        return 1
+    fi
+    
+    local server=$(echo "$source_line" | cut -d'|' -f2)
+    local token=$(echo "$source_line" | cut -d'|' -f3)
+    
+    mkdir -p "$CONFIG_REPO_DIR"
+    
+    local url="${server}?name=profiles/${profile_name}&token=${token}"
+    local output_file="${CONFIG_REPO_DIR}/${source_name}-$(basename "$profile_name" | sed 's/\..*//')-$(date +%Y%m%d-%H%M%S).yaml"
+    
+    log_info "Downloading profile: $profile_name (from $source_name)"
+    log_debug "URL: ${server}?name=profiles/${profile_name}&token=***"
+    
+    local tmpfile="${output_file}.tmp"
+    local curl_output
+    local http_code
+    
+    curl_output=$(curl -w "\n%{http_code}" -k -L --connect-timeout 30 -m 60 -o "$tmpfile" "$url" 2>&1)
+    http_code=$(echo "$curl_output" | tail -n1)
+    
+    if [ -z "$http_code" ]; then
+        http_code="000"
+    fi
+    
+    log_debug "HTTP Code: $http_code"
+    
+    if [ "$http_code" != "200" ]; then
+        log_error "Failed to download profile (HTTP $http_code)"
+        
+        if [ "$http_code" = "404" ]; then
+            log_error "Profile not found (404). Check profile name: $profile_name"
+        elif [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
+            log_error "Authentication failed ($http_code). Check token for source '$source_name'"
+        elif [ "$http_code" = "000" ]; then
+            log_error "Connection failed. Check server: $server"
+        else
+            log_error "Server error. Response code: $http_code"
+        fi
+        
+        rm -f "$tmpfile"
+        return 1
+    fi
+    
+    if [ ! -f "$tmpfile" ] || [ ! -s "$tmpfile" ]; then
+        log_error "Downloaded file is empty"
+        rm -f "$tmpfile"
+        return 1
+    fi
+    
+    if ! head -c 100 "$tmpfile" | grep -qE "^(port|mixed-port|#|proxies)"; then
+        log_error "Downloaded file appears to be invalid or incomplete"
+        rm -f "$tmpfile"
+        return 1
+    fi
+    
+    mv "$tmpfile" "$output_file"
+    local size=$(du -h "$output_file" | cut -d' ' -f1)
+    log_info "Profile saved: $output_file ($size)"
+    echo ""
+    echo "To use this profile:"
+    echo "  mihomoctl config select $output_file"
+}
+
+do_config_select() {
+    local profile_path="${1:-}"
+    
+    if [ -z "$profile_path" ]; then
+        log_error "Profile file path required"
+        echo "Usage: mihomoctl config select <file_path>"
+        echo ""
+        echo "Available profiles:"
+        if [ -d "$CONFIG_REPO_DIR" ] && [ -n "$(ls -A "$CONFIG_REPO_DIR" 2>/dev/null)" ]; then
+            ls -t "$CONFIG_REPO_DIR" | head -10 | while read f; do
+                echo "  ${CONFIG_REPO_DIR}/$f"
+            done
+        else
+            echo "  (no profiles downloaded yet)"
+            echo "  Download first: mihomoctl config download <source> <profile>"
+        fi
+        return 1
+    fi
+    
+    if [ ! -f "$profile_path" ]; then
+        log_error "Profile file not found: $profile_path"
+        return 1
+    fi
+    
+    log_info "Applying profile: $profile_path"
+    
+    if [ -f "${CONFIG_DIR}/config.yaml" ]; then
+        cp "${CONFIG_DIR}/config.yaml" "${CONFIG_DIR}/config.yaml.bak"
+        log_debug "Backed up previous config: ${CONFIG_DIR}/config.yaml.bak"
+    fi
+    
+    cp "$profile_path" "${CONFIG_DIR}/config.yaml"
+    log_info "Applied config: $(basename "$profile_path")"
+    
+    if ! grep -q "^port:" "${CONFIG_DIR}/config.yaml" 2>/dev/null && \
+       ! grep -q "^mixed-port:" "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
+        log_error "Configuration format invalid (missing port settings)"
+        log_info "Restoring previous config..."
+        if [ -f "${CONFIG_DIR}/config.yaml.bak" ]; then
+            cp "${CONFIG_DIR}/config.yaml.bak" "${CONFIG_DIR}/config.yaml"
+        fi
+        return 1
+    fi
+    
+    ensure_allow_lan "${CONFIG_DIR}/config.yaml"
+    
+    log_info "Config applied successfully"
+    
+    if systemctl is-active --quiet mihomo 2>/dev/null; then
+        log_info "Restarting mihomo service..."
+        systemctl restart mihomo
+        sleep 1
+        if systemctl is-active --quiet mihomo 2>/dev/null; then
+            log_info "Service restarted successfully"
+        else
+            log_error "Service restart failed"
+            return 1
+        fi
+    else
+        log_info "Mihomo service is not running"
+        echo "Start it with: mihomoctl start"
+    fi
+}
+
+do_start() {
+    if ! [ -f "${INSTALL_DIR}/mihomo" ]; then
+        log_error "Mihomo not installed. Run: mihomoctl install"
+        return 1
+    fi
+    
+    log_info "Starting mihomo service..."
+    if systemctl start mihomo 2>/dev/null; then
+        sleep 1
+        if systemctl is-active --quiet mihomo 2>/dev/null; then
+            log_info "Service started successfully"
+            echo ""
+            echo "Service status:"
+            systemctl status mihomo --no-pager 2>/dev/null | head -10
+        else
+            log_error "Service failed to start"
+            systemctl status mihomo --no-pager 2>/dev/null | head -20
+            return 1
+        fi
+    else
+        log_error "Failed to start service"
+        return 1
+    fi
+}
+
+do_stop() {
+    log_info "Stopping mihomo service..."
+    if systemctl stop mihomo 2>/dev/null; then
+        sleep 1
+        log_info "Service stopped"
+    else
+        log_error "Failed to stop service"
+        return 1
+    fi
+}
+
+do_restart() {
+    log_info "Restarting mihomo service..."
+    if systemctl restart mihomo 2>/dev/null; then
+        sleep 1
+        if systemctl is-active --quiet mihomo 2>/dev/null; then
+            log_info "Service restarted successfully"
+        else
+            log_error "Service failed to restart"
+            return 1
+        fi
+    else
+        log_error "Failed to restart service"
+        return 1
+    fi
+}
+
+do_status() {
+    if ! [ -f "${INSTALL_DIR}/mihomo" ]; then
+        log_error "Mihomo not installed"
+        return 1
+    fi
+    
+    echo ""
+    echo "=== Mihomo Service Status ==="
+    echo ""
+    
+    if systemctl is-active --quiet mihomo 2>/dev/null; then
+        echo "Status: ✓ Running"
+    else
+        echo "Status: ✗ Stopped"
+    fi
+    
+    if systemctl is-enabled --quiet mihomo 2>/dev/null; then
+        echo "Auto-start: ✓ Enabled"
+    else
+        echo "Auto-start: ✗ Disabled"
+    fi
+    
+    echo ""
+    echo "Configuration:"
+    echo "  Binary: ${INSTALL_DIR}/mihomo"
+    echo "  Config: ${CONFIG_DIR}/config.yaml"
+    echo "  Cache: ${CACHE_DIR}"
+    
+    if [ -f "${CONFIG_DIR}/config.yaml" ]; then
+        echo ""
+        echo "Current config ports:"
+        grep -E "^(port|mixed-port|socks-port|http-port):" "${CONFIG_DIR}/config.yaml" | sed 's/^/  /'
+    fi
+    
+    echo ""
+    echo "Service details:"
+    systemctl --no-pager status mihomo 2>/dev/null
+}
+
+do_enable() {
+    if ! [ -f "${INSTALL_DIR}/mihomo" ]; then
+        log_error "Mihomo not installed. Run: mihomoctl install"
+        return 1
+    fi
+    
+    log_info "Enabling auto-start for mihomo service..."
+    if systemctl enable mihomo 2>/dev/null; then
+        log_info "Auto-start enabled"
+        echo ""
+        echo "Mihomo will start automatically on user login"
+    else
+        log_error "Failed to enable auto-start"
+        return 1
+    fi
+}
+
+do_disable() {
+    log_info "Disabling auto-start for mihomo service..."
+    if systemctl disable mihomo 2>/dev/null; then
+        log_info "Auto-start disabled"
+    else
+        log_error "Failed to disable auto-start"
+        return 1
+    fi
+}
+
+do_uninstall() {
+    log_info "Starting mihomo uninstallation..."
+
+    if [ -z "${1:-}" ] || [ "$1" != "-f" ]; then
+        read -p "Are you sure? (yes/no): " -r
+        [[ $REPLY =~ ^[Yy][Ee][Ss]$ ]] || {
+            log_info "Cancelled"
+            return 0
+        }
+    fi
+
+    systemctl stop mihomo 2>/dev/null || true
+    systemctl disable mihomo 2>/dev/null || true
+    rm -f "${SYSTEMD_DIR}/mihomo.service"
+    systemctl daemon-reload 2>/dev/null || true
+    rm -f "${INSTALL_DIR}/mihomo"
+    rm -rf "$CONFIG_DIR" "$CACHE_DIR"
+
+    log_info "Uninstallation complete!"
+}
+
+do_ui() {
+    local subcommand="${1:-}"
+    
+    if [ -z "$subcommand" ]; then
+        log_info "Available UI commands:"
+        echo "  mihomoctl ui install     Install zashboard UI"
+        echo "  mihomoctl ui update      Update UI to latest version"
+        echo "  mihomoctl ui status      Show UI status"
+        echo "  mihomoctl ui uninstall   Remove UI"
+        return 0
+    fi
+    
+    case "$subcommand" in
+        install)
+            do_ui_install
+            ;;
+        update)
+            do_ui_update
+            ;;
+        status)
+            do_ui_status
+            ;;
+        uninstall)
+            do_ui_uninstall
+            ;;
+        *)
+            log_error "Unknown UI command: $subcommand"
+            return 1
+            ;;
+    esac
+}
+
+do_ui_install() {
+    if [ ! -f "${INSTALL_DIR}/mihomo" ]; then
+        log_error "Mihomo not installed. Run: mihomoctl install"
+        return 1
+    fi
+    
+    log_info "Installing zashboard UI..."
+    mkdir -p "$UI_DIR"
+    
+    local tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" EXIT
+    
+    log_info "Downloading zashboard..."
+    local tmpfile="$tmpdir/dist.zip"
+    
+    # 尝试下载
+    if ! curl -k -L -# --connect-timeout 30 -m 120 -o "$tmpfile" "$UI_REPO" 2>/dev/null; then
+        log_error "Failed to download zashboard from primary URL, trying alternative..."
+        # 备用 URL
+        if ! curl -k -L -# --connect-timeout 30 -m 120 -o "$tmpfile" "https://github.com/Zephyruso/zashboard/releases/download/latest/dist.zip" 2>/dev/null; then
+            log_error "Failed to download zashboard"
+            return 1
+        fi
+    fi
+    
+    log_info "Extracting UI files..."
+    cd "$tmpdir"
+    
+    # 检查 unzip 是否可用
+    if command -v unzip >/dev/null 2>&1; then
+        if ! unzip -q "$tmpfile" 2>/dev/null; then
+            log_error "Failed to extract zashboard with unzip"
+            return 1
+        fi
+    elif command -v python3 >/dev/null 2>&1; then
+        # 使用 Python 解压
+        if ! python3 -m zipfile -e "$tmpfile" . 2>/dev/null; then
+            log_error "Failed to extract zashboard with python3"
+            return 1
+        fi
+    else
+        log_error "unzip or python3 is required"
+        return 1
+    fi
+    
+    # 查找 dist 目录
+    local dist_dir
+    if [ -d "$tmpdir/dist" ]; then
+        dist_dir="$tmpdir/dist"
+    else
+        # 搜索 dist 目录
+        dist_dir=$(find "$tmpdir" -maxdepth 3 -type d -name "dist" | head -1)
+        if [ -z "$dist_dir" ]; then
+            log_error "Invalid zashboard package - dist directory not found"
+            return 1
+        fi
+    fi
+    
+    log_debug "Found dist at: $dist_dir"
+    
+    # 清除旧的 UI 文件
+    rm -rf "$UI_DIR"/*
+    
+    # 复制文件
+    if ! cp -r "$dist_dir"/* "$UI_DIR/" 2>/dev/null; then
+        log_error "Failed to install UI files"
+        return 1
+    fi
+    
+    trap - EXIT
+    
+    # 更新配置文件
+    if [ -f "${CONFIG_DIR}/config.yaml" ]; then
+        if ! grep -q "external-ui:" "${CONFIG_DIR}/config.yaml"; then
+            echo "external-ui: $UI_DIR" >> "${CONFIG_DIR}/config.yaml"
+            log_info "Updated config.yaml"
+        fi
+    fi
+    
+    local size=$(du -sh "$UI_DIR" | cut -d' ' -f1)
+    log_info "UI installed successfully: $size"
+    echo ""
+    echo "UI path: $UI_DIR"
+    echo "Access: http://127.0.0.1:9090/ui/"
+    echo ""
+    echo "To apply changes:"
+    echo "  mihomoctl restart"
+}
+
+do_ui_update() {
+    if [ ! -d "$UI_DIR" ]; then
+        log_error "UI not installed. Run: mihomoctl ui install"
+        return 1
+    fi
+    
+    log_info "Updating zashboard UI..."
+    do_ui_install
+}
+
+do_ui_status() {
+    if [ ! -d "$UI_DIR" ]; then
+        echo "UI Status: ✗ Not installed"
+        return 0
+    fi
+    
+    echo "UI Status: ✓ Installed"
+    echo "UI Path: $UI_DIR"
+    echo "UI Size: $(du -sh "$UI_DIR" | cut -d' ' -f1)"
+    
+    if [ -f "${CONFIG_DIR}/config.yaml" ]; then
+        if grep -q "external-ui:" "${CONFIG_DIR}/config.yaml"; then
+            echo "Config: ✓ Configured in config.yaml"
+            echo "Access: http://127.0.0.1:9090/ui/"
+        else
+            echo "Config: ⚠ Not configured"
+            echo "Run: mihomoctl restart"
+        fi
+    fi
+}
+
+do_ui_uninstall() {
+    if [ ! -d "$UI_DIR" ]; then
+        log_info "UI not installed"
+        return 0
+    fi
+    
+    log_info "Removing zashboard UI..."
+    rm -rf "$UI_DIR"
+    
+    # 移除配置
+    if [ -f "${CONFIG_DIR}/config.yaml" ]; then
+        sed -i '/^external-ui:/d' "${CONFIG_DIR}/config.yaml"
+    fi
+    
+    log_info "UI uninstalled successfully"
+}
+
+show_help() {
+    cat << 'HELP'
+Usage: sudo mihomoctl <command> [options]
+
+Installation & Uninstallation:
+  install              Install mihomo (uses cache if available)
+  install -f|--force   Force download, ignore cache
+  uninstall            Uninstall mihomo
+  uninstall -f         Force uninstall without confirmation
+
+Service Management:
+  start                Start mihomo service
+  stop                 Stop mihomo service
+  restart              Restart mihomo service
+  status               Show service status
+  enable               Enable auto-start on boot
+  disable              Disable auto-start
+
+Configuration Sources:
+  config [subcommand]  Manage profile sources and configurations
+    add <name> <server> <token>    Add a profile source
+    remove <name>                  Remove a profile source
+    list                           List sources and downloaded profiles
+    download <source> <profile>    Download profile from source
+    select <file>                  Apply profile file as active config
+  Note: All configs inherit allow-lan: true for LAN access
+  Sources stored in: ~/.local/share/mihomo/sources.conf
+
+Dashboard UI:
+  ui [subcommand]      Manage zashboard dashboard
+    install            Install zashboard UI
+    update             Update UI to latest version
+    status             Show UI status
+    uninstall          Remove UI
+
+Options:
+   -h, --help          Show this help
+  -v, --verbose       Enable verbose output
+
+Cache Management:
+  The script caches downloaded binaries in /var/cache/mihomo/
+  To force re-download: sudo mihomoctl install --force
+
+Examples:
+  sudo mihomoctl install
+  sudo mihomoctl start
+  
+  # Add a profile source
+  mihomoctl config add mysub https://sub.example.com/api mytoken123
+  
+  # Download and apply profile
+  sudo mihomoctl config download mysub moji.ini
+  sudo mihomoctl config select /etc/mihomo/profiles/mysub-moji-*.yaml
+  
+  # Manage UI
+  sudo mihomoctl ui install
+  sudo mihomoctl restart
+HELP
+}
+
+case "${1:-}" in
+    install)
+        shift
+        do_install "$@"
+        ;;
+    uninstall)
+        do_uninstall "${2:-}"
+        ;;
+    start)
+        do_start
+        ;;
+    stop)
+        do_stop
+        ;;
+    restart)
+        do_restart
+        ;;
+    status)
+        do_status
+        ;;
+    enable)
+        do_enable
+        ;;
+    disable)
+        do_disable
+        ;;
+    config)
+        shift
+        do_config "$@"
+        ;;
+    ui)
+        do_ui "$2"
+        ;;
+    -h|--help)
+        show_help
+        ;;
+    -v|--verbose)
+        VERBOSE=1
+        shift
+        "$0" "$@"
+        ;;
+    *)
+        [ -z "$1" ] && show_help || echo "Unknown command: $1"
+        ;;
+esac
