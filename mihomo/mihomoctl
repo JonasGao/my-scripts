@@ -278,17 +278,17 @@ do_config() {
     
     if [ -z "$subcommand" ]; then
         log_info "Available commands:"
-        echo "  mihomoctl config add <name> <server> <token>  - Add profile source"
-        echo "  mihomoctl config remove <name>                - Remove profile source"
-        echo "  mihomoctl config list                         - List sources and profiles"
-        echo "  mihomoctl config download <source> <profile>  - Download profile from source"
-        echo "  mihomoctl config select <file>                - Apply profile file"
+        echo "  mihomoctl config add <name> <url>        - Add profile source"
+        echo "  mihomoctl config remove <name>           - Remove profile source"
+        echo "  mihomoctl config list                    - List sources and profiles"
+        echo "  mihomoctl config download <source>       - Download profile from source"
+        echo "  mihomoctl config select <file>           - Apply profile file"
         return 0
     fi
     
     case "$subcommand" in
         add)
-            do_config_add "$2" "$3" "$4"
+            do_config_add "$2" "$3"
             ;;
         remove)
             do_config_remove "$2"
@@ -297,7 +297,7 @@ do_config() {
             do_config_list
             ;;
         download)
-            do_config_download "$2" "$3"
+            do_config_download "$2"
             ;;
         select)
             do_config_select "$2"
@@ -311,15 +311,14 @@ do_config() {
 
 do_config_add() {
     local name="${1:-}"
-    local server="${2:-}"
-    local token="${3:-}"
+    local url="${2:-}"
     
-    if [ -z "$name" ] || [ -z "$server" ] || [ -z "$token" ]; then
+    if [ -z "$name" ] || [ -z "$url" ]; then
         log_error "Missing arguments"
-        echo "Usage: mihomoctl config add <name> <server_url> <token>"
+        echo "Usage: mihomoctl config add <name> <url>"
         echo ""
         echo "Example:"
-        echo "  mihomoctl config add mysub https://sub.example.com/api mytoken123"
+        echo "  mihomoctl config add mysub https://sub.example.com/api?token=xxx"
         return 1
     fi
     
@@ -332,14 +331,14 @@ do_config_add() {
         return 1
     fi
     
-    echo "${name}|${server}|${token}" >> "$sources_file"
+    echo "${name}|${url}" >> "$sources_file"
     log_info "Added source: $name"
-    log_debug "Server: $server"
+    log_debug "URL: $url"
     echo ""
     echo "Sources file: $sources_file"
     echo ""
     echo "Download profile:"
-    echo "  mihomoctl config download $name <profile_name>"
+    echo "  mihomoctl config download $name"
 }
 
 do_config_remove() {
@@ -376,15 +375,15 @@ do_config_list() {
     
     if [ -f "$sources_file" ] && [ -s "$sources_file" ]; then
         echo "Configured sources:"
-        while IFS='|' read -r name server token; do
+        while IFS='|' read -r name url; do
             echo "  $name"
-            echo "    Server: $server"
+            echo "    URL: $url"
         done < "$sources_file"
     else
         echo "No sources configured"
         echo ""
         echo "Add a source:"
-        echo "  mihomoctl config add <name> <server_url> <token>"
+        echo "  mihomoctl config add <name> <url>"
     fi
     
     echo ""
@@ -403,17 +402,10 @@ do_config_list() {
 
 do_config_download() {
     local source_name="${1:-}"
-    local profile_name="${2:-}"
     
     if [ -z "$source_name" ]; then
         log_error "Source name required"
-        echo "Usage: mihomoctl config download <source_name> <profile_name>"
-        return 1
-    fi
-    
-    if [ -z "$profile_name" ]; then
-        log_error "Profile name required"
-        echo "Usage: mihomoctl config download <source_name> <profile_name>"
+        echo "Usage: mihomoctl config download <source_name>"
         return 1
     fi
     
@@ -421,7 +413,7 @@ do_config_download() {
     
     if [ ! -f "$sources_file" ]; then
         log_error "No sources configured"
-        echo "Add a source first: mihomoctl config add <name> <server> <token>"
+        echo "Add a source first: mihomoctl config add <name> <url>"
         return 1
     fi
     
@@ -433,23 +425,19 @@ do_config_download() {
         return 1
     fi
     
-    local server=$(echo "$source_line" | cut -d'|' -f2)
-    local token=$(echo "$source_line" | cut -d'|' -f3)
+    local url=$(echo "$source_line" | cut -d'|' -f2)
     
     mkdir -p "$CONFIG_REPO_DIR"
     
-    local url="${server}?name=profiles/${profile_name}&token=${token}"
-    local output_file="${CONFIG_REPO_DIR}/${source_name}-$(basename "$profile_name" | sed 's/\..*//')-$(date +%Y%m%d-%H%M%S).yaml"
+    local output_file="${CONFIG_REPO_DIR}/${source_name}-$(date +%Y%m%d-%H%M%S).yaml"
     
-    log_info "Downloading profile: $profile_name (from $source_name)"
-    log_debug "URL: ${server}?name=profiles/${profile_name}&token=***"
+    log_info "Downloading profile from: $source_name"
+    log_debug "URL: $url"
     
     local tmpfile="${output_file}.tmp"
-    local curl_output
     local http_code
     
-    curl_output=$(curl -w "\n%{http_code}" -k -L --connect-timeout 30 -m 60 -o "$tmpfile" "$url" 2>&1)
-    http_code=$(echo "$curl_output" | tail -n1)
+    http_code=$(curl -w "%{http_code}" -k -L --connect-timeout 30 -m 60 -o "$tmpfile" "$url" 2>&1 | tail -n1)
     
     if [ -z "$http_code" ]; then
         http_code="000"
@@ -461,11 +449,11 @@ do_config_download() {
         log_error "Failed to download profile (HTTP $http_code)"
         
         if [ "$http_code" = "404" ]; then
-            log_error "Profile not found (404). Check profile name: $profile_name"
+            log_error "Profile not found (404)"
         elif [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
-            log_error "Authentication failed ($http_code). Check token for source '$source_name'"
+            log_error "Authentication failed ($http_code). Check URL for source '$source_name'"
         elif [ "$http_code" = "000" ]; then
-            log_error "Connection failed. Check server: $server"
+            log_error "Connection failed. Check URL: $url"
         else
             log_error "Server error. Response code: $http_code"
         fi
@@ -886,11 +874,11 @@ Service Management:
 
 Configuration Sources:
   config [subcommand]  Manage profile sources and configurations
-    add <name> <server> <token>    Add a profile source
-    remove <name>                  Remove a profile source
-    list                           List sources and downloaded profiles
-    download <source> <profile>    Download profile from source
-    select <file>                  Apply profile file as active config
+    add <name> <url>             Add a profile source (URL may include token)
+    remove <name>                Remove a profile source
+    list                         List sources and downloaded profiles
+    download <source>            Download profile from source
+    select <file>                Apply profile file as active config
   Note: All configs inherit allow-lan: true for LAN access
   Sources stored in: ~/.local/share/mihomo/sources.conf
 
@@ -913,12 +901,12 @@ Examples:
   sudo mihomoctl install
   sudo mihomoctl start
   
-  # Add a profile source
-  mihomoctl config add mysub https://sub.example.com/api mytoken123
+  # Add a profile source (URL may include token)
+  mihomoctl config add mysub https://sub.example.com/api?token=xxx
   
   # Download and apply profile
-  sudo mihomoctl config download mysub moji.ini
-  sudo mihomoctl config select /etc/mihomo/profiles/mysub-moji-*.yaml
+  sudo mihomoctl config download mysub
+  sudo mihomoctl config select /etc/mihomo/profiles/mysub-*.yaml
   
   # Manage UI
   sudo mihomoctl ui install
