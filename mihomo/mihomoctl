@@ -9,11 +9,13 @@ CONFIG_DIR="/etc/mihomo"
 CACHE_DIR="/var/cache/mihomo"
 SYSTEMD_DIR="/etc/systemd/system"
 CONFIG_REPO_DIR="${CONFIG_DIR}/profiles"
+MANUAL_CONFIG_DIR="${CONFIG_DIR}/manual"
 UI_DIR="${CONFIG_DIR}/ui"
 LOG_DIR="/var/log/mihomo"
 
 UI_REPO="https://github.com/Zephyruso/zashboard/releases/download/latest/dist-no-fonts.zip"
 VERBOSE="${VERBOSE:-0}"
+USER_AGENT="${USER_AGENT:-Clash/v1.18.0}"
 
 # XDG 数据目录（存储配置源）
 XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -55,10 +57,10 @@ case "${1:-}" in
         ;;
     config)
         case "${2:-}" in
-            download|select)
+            download|select|create|edit)
                 check_root "$@"
                 ;;
-            add|remove|list)
+            add|remove|list|show)
                 ;;
         esac
         ;;
@@ -132,7 +134,7 @@ curl_progress() {
         log_info "Force download: ignoring cache"
     fi
 
-    curl -k -L -# --connect-timeout 30 -m 60 -o "$output" "$url" || {
+    curl -k -L -# -A "$USER_AGENT" --connect-timeout 30 -m 60 -o "$output" "$url" || {
         local err=$?
         log_error "curl failed with code $err"
         return $err
@@ -278,11 +280,14 @@ do_config() {
     
     if [ -z "$subcommand" ]; then
         log_info "Available commands:"
-        echo "  mihomoctl config add <name> <url>        - Add profile source"
-        echo "  mihomoctl config remove <name>           - Remove profile source"
-        echo "  mihomoctl config list                    - List sources and profiles"
-        echo "  mihomoctl config download <source>       - Download profile from source"
-        echo "  mihomoctl config select <file>           - Apply profile file"
+        echo "  mihomoctl config add <name> <url>          - Add profile source"
+        echo "  mihomoctl config remove <name>             - Remove source, manual config, or profile"
+        echo "  mihomoctl config list                      - List sources, profiles, and manual configs"
+        echo "  mihomoctl config download <source>         - Download profile from source"
+        echo "  mihomoctl config select <name_or_path>     - Apply a config (by name or file path)"
+        echo "  mihomoctl config create <name>             - Create a new manual config from template"
+        echo "  mihomoctl config edit <name>               - Edit a manual config file"
+        echo "  mihomoctl config show                      - Show current active config details"
         return 0
     fi
     
@@ -302,6 +307,15 @@ do_config() {
         select)
             do_config_select "$2"
             ;;
+        create)
+            do_config_create "$2"
+            ;;
+        edit)
+            do_config_edit "$2"
+            ;;
+        show)
+            do_config_show
+            ;;
         *)
             log_error "Unknown config command: $subcommand"
             return 1
@@ -311,17 +325,41 @@ do_config() {
 
 do_config_add() {
     local name="${1:-}"
-    local url="${2:-}"
+    local source="${2:-}"
     
-    if [ -z "$name" ] || [ -z "$url" ]; then
+    if [ -z "$name" ] || [ -z "$source" ]; then
         log_error "Missing arguments"
         echo "Usage: mihomoctl config add <name> <url>"
+        echo "       mihomoctl config add <name> <file_path>"
         echo ""
-        echo "Example:"
+        echo "Examples:"
         echo "  mihomoctl config add mysub https://sub.example.com/api?token=xxx"
+        echo "  sudo mihomoctl config add myconfig ./my-mihomo-config.yaml"
         return 1
     fi
     
+    # If the source is an existing file, add it as a manual config
+    if [ -f "$source" ]; then
+        check_root "config add $name $source"
+        
+        mkdir -p "$MANUAL_CONFIG_DIR"
+        local config_file="${MANUAL_CONFIG_DIR}/${name}.yaml"
+        
+        if [ -f "$config_file" ]; then
+            log_error "Config '$name' already exists at $config_file"
+            echo "Use 'sudo mihomoctl config remove $name' to remove it first"
+            return 1
+        fi
+        
+        cp "$source" "$config_file"
+        log_info "Added manual config: $name ($(du -h "$config_file" | cut -d' ' -f1))"
+        echo ""
+        echo "Edit it:   sudo mihomoctl config edit $name"
+        echo "Apply it:  sudo mihomoctl config select $name"
+        return 0
+    fi
+    
+    # Otherwise, treat it as a URL source
     local sources_file=$(get_sources_file)
     mkdir -p "$(dirname "$sources_file")"
     
@@ -331,9 +369,9 @@ do_config_add() {
         return 1
     fi
     
-    echo "${name}|${url}" >> "$sources_file"
+    echo "${name}|${source}" >> "$sources_file"
     log_info "Added source: $name"
-    log_debug "URL: $url"
+    log_debug "URL: $source"
     echo ""
     echo "Sources file: $sources_file"
     echo ""
@@ -345,25 +383,44 @@ do_config_remove() {
     local name="${1:-}"
     
     if [ -z "$name" ]; then
-        log_error "Source name required"
+        log_error "Source or config name required"
         echo "Usage: mihomoctl config remove <name>"
+        echo ""
+        echo "Removes a source, manual config, or downloaded profile by name."
         return 1
     fi
     
+    local found=0
+    
+    # 1. Check profile sources
     local sources_file=$(get_sources_file)
-    
-    if [ ! -f "$sources_file" ]; then
-        log_error "No sources configured"
-        return 1
+    if [ -f "$sources_file" ] && grep -q "^${name}|" "$sources_file"; then
+        sed -i "/^${name}|/d" "$sources_file"
+        log_info "Removed source: $name"
+        found=1
     fi
     
-    if ! grep -q "^${name}|" "$sources_file"; then
-        log_error "Source '$name' not found"
-        return 1
+    # 2. Check manual configs
+    if [ -f "${MANUAL_CONFIG_DIR}/${name}.yaml" ]; then
+        rm -f "${MANUAL_CONFIG_DIR}/${name}.yaml"
+        log_info "Removed manual config: ${name}.yaml"
+        found=1
     fi
     
-    sed -i "/^${name}|/d" "$sources_file"
-    log_info "Removed source: $name"
+    # 3. Check downloaded profiles (glob match)
+    if [ -d "$CONFIG_REPO_DIR" ]; then
+        for f in "$CONFIG_REPO_DIR"/*"${name}"*; do
+            [ -f "$f" ] || continue
+            rm -f "$f"
+            log_info "Removed profile: $(basename "$f")"
+            found=1
+        done
+    fi
+    
+    if [ "$found" -eq 0 ]; then
+        log_error "No source, manual config, or profile found matching '$name'"
+        return 1
+    fi
 }
 
 do_config_list() {
@@ -393,7 +450,30 @@ do_config_list() {
     if [ -d "$CONFIG_REPO_DIR" ] && [ -n "$(ls -A "$CONFIG_REPO_DIR" 2>/dev/null)" ]; then
         ls -lh "$CONFIG_REPO_DIR" | tail -n +2 | awk '{printf "  %s (%s)\n", $9, $5}'
     else
-        echo "  (no profiles downloaded yet)"
+        echo "  (no profiles downloaded)"
+    fi
+    
+    echo ""
+    echo "=== Manual Configs ==="
+    echo ""
+    
+    if [ -d "$MANUAL_CONFIG_DIR" ] && [ -n "$(ls -A "$MANUAL_CONFIG_DIR" 2>/dev/null)" ]; then
+        ls -lh "$MANUAL_CONFIG_DIR" | tail -n +2 | awk '{printf "  %s (%s)\n", $9, $5}'
+    else
+        echo "  (no manual configs created)"
+        echo ""
+        echo "Create a manual config:"
+        echo "  mihomoctl config create <name>"
+    fi
+    
+    echo ""
+    echo "=== Current Active Config ==="
+    echo ""
+    
+    if [ -f "${CONFIG_DIR}/config.yaml" ]; then
+        echo "  ${CONFIG_DIR}/config.yaml ($(du -h "${CONFIG_DIR}/config.yaml" | cut -d' ' -f1))"
+    else
+        echo "  (no config applied)"
     fi
     
     echo ""
@@ -437,7 +517,7 @@ do_config_download() {
     local tmpfile="${output_file}.tmp"
     local http_code
     
-    http_code=$(curl -w "%{http_code}" -k -L --connect-timeout 30 -m 60 -o "$tmpfile" "$url" 2>&1 | tail -n1)
+    http_code=$(curl -w "%{http_code}" -k -L -A "$USER_AGENT" --connect-timeout 30 -m 60 -o "$tmpfile" "$url" 2>&1 | tail -n1)
     
     if [ -z "$http_code" ]; then
         http_code="000"
@@ -483,26 +563,46 @@ do_config_download() {
 }
 
 do_config_select() {
-    local profile_path="${1:-}"
+    local target="${1:-}"
     
-    if [ -z "$profile_path" ]; then
-        log_error "Profile file path required"
-        echo "Usage: mihomoctl config select <file_path>"
+    if [ -z "$target" ]; then
+        log_error "Config name or path required"
+        echo "Usage: mihomoctl config select <name_or_path>"
         echo ""
-        echo "Available profiles:"
-        if [ -d "$CONFIG_REPO_DIR" ] && [ -n "$(ls -A "$CONFIG_REPO_DIR" 2>/dev/null)" ]; then
-            ls -t "$CONFIG_REPO_DIR" | head -10 | while read f; do
-                echo "  ${CONFIG_REPO_DIR}/$f"
-            done
-        else
-            echo "  (no profiles downloaded yet)"
-            echo "  Download first: mihomoctl config download <source> <profile>"
-        fi
+        echo "You can specify:"
+        echo "  - A config name (searches manual/ then profiles/)"
+        echo "  - A full file path"
+        echo ""
+        echo "Available:"
+        do_config_list_configs
         return 1
     fi
     
-    if [ ! -f "$profile_path" ]; then
-        log_error "Profile file not found: $profile_path"
+    local profile_path=""
+    
+    # If argument is an existing file, use it directly
+    if [ -f "$target" ]; then
+        profile_path="$target"
+    else
+        # Search by name: manual configs first (exact), then downloaded profiles (glob)
+        if [ -f "${MANUAL_CONFIG_DIR}/${target}.yaml" ]; then
+            profile_path="${MANUAL_CONFIG_DIR}/${target}.yaml"
+        elif [ -f "${MANUAL_CONFIG_DIR}/${target}" ]; then
+            profile_path="${MANUAL_CONFIG_DIR}/${target}"
+        else
+            for f in "$CONFIG_REPO_DIR"/*"${target}"*; do
+                [ -f "$f" ] || continue
+                profile_path="$f"
+                break
+            done
+        fi
+    fi
+    
+    if [ -z "$profile_path" ] || [ ! -f "$profile_path" ]; then
+        log_error "Config not found: $target"
+        echo ""
+        echo "Available:"
+        do_config_list_configs
         return 1
     fi
     
@@ -543,6 +643,177 @@ do_config_select() {
     else
         log_info "Mihomo service is not running"
         echo "Start it with: mihomoctl start"
+    fi
+}
+
+do_config_create() {
+    local name="${1:-}"
+    
+    if [ -z "$name" ]; then
+        log_error "Config name required"
+        echo "Usage: mihomoctl config create <name>"
+        echo ""
+        echo "Creates a new manual config file from a default template."
+        echo "Edit it afterward with: sudo mihomoctl config edit $name"
+        return 1
+    fi
+    
+    # Validate name (alphanumeric, hyphens, underscores only)
+    if ! echo "$name" | grep -qE '^[a-zA-Z0-9_-]+$'; then
+        log_error "Invalid config name. Use only letters, numbers, hyphens, and underscores."
+        return 1
+    fi
+    
+    mkdir -p "$MANUAL_CONFIG_DIR"
+    local config_file="${MANUAL_CONFIG_DIR}/${name}.yaml"
+    
+    if [ -f "$config_file" ]; then
+        log_error "Config '$name' already exists at $config_file"
+        echo "Edit it: sudo mihomoctl config edit $name"
+        return 1
+    fi
+    
+    cat > "$config_file" << 'MANUAL_EOF'
+# mihomo manual configuration
+mixed-port: 7890
+allow-lan: true
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
+
+# Proxy nodes
+proxies:
+
+# Proxy groups
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - DIRECT
+
+# Rules
+rules:
+  - MATCH,Proxy
+MANUAL_EOF
+    
+    log_info "Created manual config: $config_file"
+    echo ""
+    echo "Edit this file:"
+    echo "  sudo mihomoctl config edit $name"
+    echo ""
+    echo "Apply it:"
+    echo "  sudo mihomoctl config select $name"
+}
+
+do_config_edit() {
+    local name="${1:-}"
+    
+    if [ -z "$name" ]; then
+        log_error "Config name required"
+        echo "Usage: mihomoctl config edit <name>"
+        echo ""
+        echo "Opens the config file in your default editor (\$EDITOR, defaults to vim)."
+        echo ""
+        echo "Available:"
+        do_config_list_configs
+        return 1
+    fi
+    
+    local config_file=""
+    
+    # Strip .yaml extension if provided, then search
+    local base_name="${name%.yaml}"
+    
+    if [ -f "${MANUAL_CONFIG_DIR}/${base_name}.yaml" ]; then
+        config_file="${MANUAL_CONFIG_DIR}/${base_name}.yaml"
+    elif [ -f "${MANUAL_CONFIG_DIR}/${name}" ]; then
+        config_file="${MANUAL_CONFIG_DIR}/${name}"
+    elif [ -f "${CONFIG_REPO_DIR}/${name}" ]; then
+        config_file="${CONFIG_REPO_DIR}/${name}"
+    elif [ -f "${CONFIG_REPO_DIR}/${name}.yaml" ]; then
+        config_file="${CONFIG_REPO_DIR}/${name}.yaml"
+    else
+        log_error "Config '$name' not found"
+        echo ""
+        echo "Available:"
+        do_config_list_configs
+        return 1
+    fi
+    
+    local editor="${EDITOR:-vim}"
+    log_info "Opening $config_file with $editor..."
+    $editor "$config_file"
+}
+
+do_config_show() {
+    local current="${CONFIG_DIR}/config.yaml"
+    
+    echo ""
+    echo "=== Current Active Config ==="
+    echo ""
+    
+    if [ ! -f "$current" ]; then
+        echo "  No config file found at $current"
+        return 0
+    fi
+    
+    local size=$(du -h "$current" | cut -d' ' -f1)
+    echo "  Path: $current"
+    echo "  Size: $size"
+    echo ""
+    
+    # Try to identify source by comparing contents
+    local identified=""
+    if [ -d "$MANUAL_CONFIG_DIR" ]; then
+        for f in "$MANUAL_CONFIG_DIR"/*; do
+            [ -f "$f" ] || continue
+            if cmp -s "$current" "$f" 2>/dev/null; then
+                identified="Manual config: $(basename "$f")"
+                break
+            fi
+        done
+    fi
+    
+    if [ -z "$identified" ] && [ -d "$CONFIG_REPO_DIR" ]; then
+        for f in "$CONFIG_REPO_DIR"/*; do
+            [ -f "$f" ] || continue
+            if cmp -s "$current" "$f" 2>/dev/null; then
+                identified="Downloaded profile: $(basename "$f")"
+                break
+            fi
+        done
+    fi
+    
+    if [ -n "$identified" ]; then
+        echo "  Source: $identified"
+    else
+        echo "  Source: (outside managed profiles — edited manually or from install)"
+    fi
+    
+    echo ""
+    echo "Key settings:"
+    grep -E "^(port|mixed-port|socks-port|external-controller|mode|log-level):" "$current" | sed 's/^/  /'
+    
+    echo ""
+    echo "Actions:"
+    echo "  List configs:  mihomoctl config list"
+    echo "  Switch:        sudo mihomoctl config select <name_or_path>"
+}
+
+do_config_list_configs() {
+    echo "Manual configs:"
+    if [ -d "$MANUAL_CONFIG_DIR" ] && [ -n "$(ls -A "$MANUAL_CONFIG_DIR" 2>/dev/null)" ]; then
+        ls -1 "$MANUAL_CONFIG_DIR" | sed 's/^/  /'
+    else
+        echo "  (none — create one: mihomoctl config create <name>)"
+    fi
+    
+    echo ""
+    echo "Downloaded profiles:"
+    if [ -d "$CONFIG_REPO_DIR" ] && [ -n "$(ls -A "$CONFIG_REPO_DIR" 2>/dev/null)" ]; then
+        ls -1 "$CONFIG_REPO_DIR" | sed 's/^/  /'
+    else
+        echo "  (none — download one: sudo mihomoctl config download <source>)"
     fi
 }
 
@@ -733,10 +1004,10 @@ do_ui_install() {
     local tmpfile="$tmpdir/dist.zip"
     
     # 尝试下载
-    if ! curl -k -L -# --connect-timeout 30 -m 120 -o "$tmpfile" "$UI_REPO" 2>/dev/null; then
+    if ! curl -k -L -# -A "$USER_AGENT" --connect-timeout 30 -m 120 -o "$tmpfile" "$UI_REPO" 2>/dev/null; then
         log_error "Failed to download zashboard from primary URL, trying alternative..."
         # 备用 URL
-        if ! curl -k -L -# --connect-timeout 30 -m 120 -o "$tmpfile" "https://github.com/Zephyruso/zashboard/releases/download/latest/dist.zip" 2>/dev/null; then
+        if ! curl -k -L -# -A "$USER_AGENT" --connect-timeout 30 -m 120 -o "$tmpfile" "https://github.com/Zephyruso/zashboard/releases/download/latest/dist.zip" 2>/dev/null; then
             log_error "Failed to download zashboard"
             return 1
         fi
@@ -872,13 +1143,17 @@ Service Management:
   enable               Enable auto-start on boot
   disable              Disable auto-start
 
-Configuration Sources:
-  config [subcommand]  Manage profile sources and configurations
-    add <name> <url>             Add a profile source (URL may include token)
-    remove <name>                Remove a profile source
-    list                         List sources and downloaded profiles
+Configuration Sources & Manual Configs:
+  config [subcommand]  Manage profile sources, manual configs, and profiles
+    add <name> <url|path>        Add a URL source or import a local config file
+    remove <name>                Remove source, manual config, or downloaded profile
+    list                         List sources, manual configs, and profiles
     download <source>            Download profile from source
-    select <file>                Apply profile file as active config
+    select <name_or_path>        Apply a config by name or file path
+    create <name>                Create a new manual config from template
+    edit <name>                  Edit a manual config (\$EDITOR, default vim)
+    show                         Show current active config details
+  Manual configs stored in: /etc/mihomo/manual/
   Note: All configs inherit allow-lan: true for LAN access
   Sources stored in: ~/.local/share/mihomo/sources.conf
 
@@ -904,9 +1179,20 @@ Examples:
   # Add a profile source (URL may include token)
   mihomoctl config add mysub https://sub.example.com/api?token=xxx
   
+  # Import an existing local config file
+  sudo mihomoctl config add myconfig ./my-mihomo-config.yaml
+  
   # Download and apply profile
   sudo mihomoctl config download mysub
-  sudo mihomoctl config select /etc/mihomo/profiles/mysub-*.yaml
+  sudo mihomoctl config select mysub
+  
+  # Create and use a manual config
+  sudo mihomoctl config create myconfig
+  sudo mihomoctl config edit myconfig
+  sudo mihomoctl config select myconfig
+  
+  # Show current config details
+  mihomoctl config show
   
   # Manage UI
   sudo mihomoctl ui install
