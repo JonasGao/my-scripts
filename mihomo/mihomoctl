@@ -27,6 +27,20 @@ get_sources_file() {
     echo "${data_dir}/mihomo/sources.conf"
 }
 
+get_config_dir() {
+    local default_dir="/etc/mihomo"
+    local config_file="${HOME}/.config/mihomo/config-dir.conf"
+    
+    if [ -f "$config_file" ]; then
+        local saved_dir=$(cat "$config_file" 2>/dev/null)
+        if [ -n "$saved_dir" ] && [ -d "$saved_dir" ]; then
+            echo "$saved_dir"
+            return
+        fi
+    fi
+    echo "$default_dir"
+}
+
 log_info() { echo "[INFO] $1"; }
 log_error() { echo "[ERROR] $1" >&2; }
 log_debug() { [[ "$VERBOSE" = "1" ]] && echo "[DEBUG] $1"; }
