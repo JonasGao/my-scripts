@@ -594,6 +594,80 @@ do_config_download() {
     echo "  mihomoctl config select $output_file"
 }
 
+do_config_select_interactive() {
+    local configs=()
+    local types=()
+    local files=()
+    
+    # Collect manual configs
+    if [ -d "$MANUAL_CONFIG_DIR" ] && [ -n "$(ls -A "$MANUAL_CONFIG_DIR" 2>/dev/null)" ]; then
+        for f in "$MANUAL_CONFIG_DIR"/*.yaml; do
+            [ -f "$f" ] || continue
+            configs+=("$(basename "$f")")
+            types+=("manual")
+            files+=("$f")
+        done
+    fi
+    
+    # Collect downloaded profiles
+    if [ -d "$CONFIG_REPO_DIR" ] && [ -n "$(ls -A "$CONFIG_REPO_DIR" 2>/dev/null)" ]; then
+        for f in "$CONFIG_REPO_DIR"/*.yaml; do
+            [ -f "$f" ] || continue
+            configs+=("$(basename "$f")")
+            types+=("profile")
+            files+=("$f")
+        done
+    fi
+    
+    if [ ${#configs[@]} -eq 0 ]; then
+        log_error "No configs available"
+        echo "Download or create a config first:"
+        echo "  mihomoctl config download <source>"
+        echo "  mihomoctl config create <name>"
+        return 1
+    fi
+    
+    # Display detailed menu
+    echo ""
+    echo "Available configs:"
+    echo ""
+    
+    local i=1
+    for config in "${configs[@]}"; do
+        local file="${files[$i-1]}"
+        local size=$(du -h "$file" | cut -d' ' -f1)
+        local timestamp=$(stat -c %y "$file" 2>/dev/null | cut -d' ' -f1)
+        
+        printf "%2d) [%-7s] %s (%s, %s)\n" \
+            "$i" "${types[$i-1]}" "$config" "$size" "$timestamp"
+        i=$((i+1))
+    done
+    
+    echo ""
+    echo "Or enter file path directly"
+    echo ""
+    
+    # Read user selection
+    local selection
+    read -p "Select config [1-${#configs[@]}] or path: " -r selection
+    
+    # Check if numeric selection
+    if [[ "$selection" =~ ^[0-9]+$ ]] && \
+       [ "$selection" -ge 1 ] && \
+       [ "$selection" -le ${#configs[@]} ]; then
+        local selected_file="${files[$selection-1]}"
+        log_info "Selected: ${configs[$selection-1]}"
+        apply_config "$selected_file"
+    elif [ -f "$selection" ]; then
+        # User entered file path
+        log_info "Using file path: $selection"
+        apply_config "$selection"
+    else
+        log_error "Invalid selection: $selection"
+        return 1
+    fi
+}
+
 apply_config() {
     local profile_path="$1"
     
