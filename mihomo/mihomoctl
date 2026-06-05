@@ -202,6 +202,13 @@ do_install() {
     log_info "Starting mihomo user-level installation..."
     log_info "Version: $VERSION, Arch: $MIRROR_ARCH"
     log_info "Config directory: $config_dir"
+    
+    # Save config directory preference for other commands
+    if [ "$config_dir" != "/etc/mihomo" ]; then
+        mkdir -p "${HOME}/.config/mihomo"
+        echo "$config_dir" > "${HOME}/.config/mihomo/config-dir.conf"
+        log_info "Saved config directory preference: $config_dir"
+    fi
 
     local url="${MIRROR}https://github.com/MetaCubeX/mihomo/releases/download/${VERSION}/mihomo-${MIRROR_ARCH}-v2-${VERSION}.gz"
     local tmpfile=$(mktemp)
