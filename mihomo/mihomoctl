@@ -594,6 +594,49 @@ do_config_download() {
     echo "  mihomoctl config select $output_file"
 }
 
+apply_config() {
+    local profile_path="$1"
+    
+    log_info "Applying profile: $profile_path"
+    
+    if [ -f "${CONFIG_DIR}/config.yaml" ]; then
+        cp "${CONFIG_DIR}/config.yaml" "${CONFIG_DIR}/config.yaml.bak"
+        log_debug "Backed up previous config: ${CONFIG_DIR}/config.yaml.bak"
+    fi
+    
+    cp "$profile_path" "${CONFIG_DIR}/config.yaml"
+    log_info "Applied config: $(basename "$profile_path")"
+    
+    if ! grep -q "^port:" "${CONFIG_DIR}/config.yaml" 2>/dev/null && \
+       ! grep -q "^mixed-port:" "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
+        log_error "Configuration format invalid (missing port settings)"
+        log_info "Restoring previous config..."
+        if [ -f "${CONFIG_DIR}/config.yaml.bak" ]; then
+            cp "${CONFIG_DIR}/config.yaml.bak" "${CONFIG_DIR}/config.yaml"
+        fi
+        return 1
+    fi
+    
+    ensure_allow_lan "${CONFIG_DIR}/config.yaml"
+    
+    log_info "Config applied successfully"
+    
+    if systemctl is-active --quiet mihomo 2>/dev/null; then
+        log_info "Restarting mihomo service..."
+        systemctl restart mihomo
+        sleep 1
+        if systemctl is-active --quiet mihomo 2>/dev/null; then
+            log_info "Service restarted successfully"
+        else
+            log_error "Service restart failed"
+            return 1
+        fi
+    else
+        log_info "Mihomo service is not running"
+        echo "Start it with: mihomoctl start"
+    fi
+}
+
 do_config_select() {
     local target="${1:-}"
     
