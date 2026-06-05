@@ -1234,10 +1234,11 @@ show_help() {
 Usage: sudo mihomoctl <command> [options]
 
 Installation & Uninstallation:
-  install              Install mihomo (uses cache if available)
-  install -f|--force   Force download, ignore cache
-  uninstall            Uninstall mihomo
-  uninstall -f         Force uninstall without confirmation
+  install                           Install mihomo (uses cache if available)
+  install -f|--force                Force download, ignore cache
+  install --config-dir <path>       Install with custom config directory
+  uninstall                         Uninstall mihomo
+  uninstall -f                      Force uninstall without confirmation
 
 Service Management:
   start                Start mihomo service
@@ -1253,7 +1254,7 @@ Configuration Sources & Manual Configs:
     remove <name>                Remove source, manual config, or downloaded profile
     list                         List sources, manual configs, and profiles
     download <source>            Download profile from source
-    select <name_or_path>        Apply a config by name or file path
+    select [name_or_path]        Apply a config (interactive menu if no argument)
     create <name>                Create a new manual config from template
     edit <name>                  Edit a manual config (\$EDITOR, default vim)
     show                         Show current active config details
@@ -1279,6 +1280,12 @@ Cache Management:
 Examples:
   sudo mihomoctl install
   sudo mihomoctl start
+  
+  # Install with custom config directory
+  sudo mihomoctl install --config-dir /opt/mihomo-config
+  
+  # Interactive config selection
+  sudo mihomoctl config select
   
   # Add a profile source (URL may include token)
   mihomoctl config add mysub https://sub.example.com/api?token=xxx
