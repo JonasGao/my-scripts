@@ -175,6 +175,7 @@ cache_uncompressed() {
 
 do_install() {
     local force_download=0
+    local config_dir="/etc/mihomo"
     
     # 解析参数
     while [[ $# -gt 0 ]]; do
@@ -184,6 +185,14 @@ do_install() {
                 log_info "Force download enabled"
                 shift
                 ;;
+            --config-dir)
+                if [ -z "$2" ]; then
+                    log_error "--config-dir requires a directory path"
+                    exit 1
+                fi
+                config_dir="$2"
+                shift 2
+                ;;
             *)
                 shift
                 ;;
@@ -192,6 +201,7 @@ do_install() {
     
     log_info "Starting mihomo user-level installation..."
     log_info "Version: $VERSION, Arch: $MIRROR_ARCH"
+    log_info "Config directory: $config_dir"
 
     local url="${MIRROR}https://github.com/MetaCubeX/mihomo/releases/download/${VERSION}/mihomo-${MIRROR_ARCH}-v2-${VERSION}.gz"
     local tmpfile=$(mktemp)
