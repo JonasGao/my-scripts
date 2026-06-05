@@ -3,9 +3,24 @@
 VERSION="v1.19.24"
 MIRROR="${MIRROR:-https://mirror.ghproxy.com/}"
 
+# Helper function for dynamic config directory
+get_config_dir() {
+    local default_dir="/etc/mihomo"
+    local config_file="${HOME}/.config/mihomo/config-dir.conf"
+    
+    if [ -f "$config_file" ]; then
+        local saved_dir=$(cat "$config_file" 2>/dev/null)
+        if [ -n "$saved_dir" ] && [ -d "$saved_dir" ]; then
+            echo "$saved_dir"
+            return
+        fi
+    fi
+    echo "$default_dir"
+}
+
 # 系统级目录（FHS 标准）
 INSTALL_DIR="/usr/local/bin"
-CONFIG_DIR="/etc/mihomo"
+CONFIG_DIR=$(get_config_dir)
 CACHE_DIR="/var/cache/mihomo"
 SYSTEMD_DIR="/etc/systemd/system"
 CONFIG_REPO_DIR="${CONFIG_DIR}/profiles"
@@ -25,20 +40,6 @@ get_sources_file() {
     local data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
     mkdir -p "$data_dir/mihomo"
     echo "${data_dir}/mihomo/sources.conf"
-}
-
-get_config_dir() {
-    local default_dir="/etc/mihomo"
-    local config_file="${HOME}/.config/mihomo/config-dir.conf"
-    
-    if [ -f "$config_file" ]; then
-        local saved_dir=$(cat "$config_file" 2>/dev/null)
-        if [ -n "$saved_dir" ] && [ -d "$saved_dir" ]; then
-            echo "$saved_dir"
-            return
-        fi
-    fi
-    echo "$default_dir"
 }
 
 log_info() { echo "[INFO] $1"; }
