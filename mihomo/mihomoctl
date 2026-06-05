@@ -266,18 +266,18 @@ do_install() {
     trap - EXIT
     log_info "Installed: $(du -h "${INSTALL_DIR}/mihomo" | cut -d' ' -f1)"
 
-    mkdir -p "$CONFIG_DIR" "$CONFIG_REPO_DIR"
-    log_info "Creating config directory ${CONFIG_DIR}..."
+    mkdir -p "$config_dir" "$CONFIG_REPO_DIR"
+    log_info "Creating config directory ${config_dir}..."
 
-    if [ ! -f "${CONFIG_DIR}/config.yaml" ]; then
-        cat > "${CONFIG_DIR}/config.yaml" << 'EOF'
+    if [ ! -f "${config_dir}/config.yaml" ]; then
+        cat > "${config_dir}/config.yaml" << 'EOF'
 mixed-port: 7890
 allow-lan: true
 mode: rule
 log-level: info
 external-controller: 127.0.0.1:9090
 EOF
-        log_info "Created default config: ${CONFIG_DIR}/config.yaml"
+        log_info "Created default config: ${config_dir}/config.yaml"
     fi
 
     mkdir -p "$SYSTEMD_DIR"
@@ -290,7 +290,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/mihomo -f ${CONFIG_DIR}/config.yaml
+ExecStart=${INSTALL_DIR}/mihomo -d ${config_dir}
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=1048576
