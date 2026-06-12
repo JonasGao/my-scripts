@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ME="$(basename "$0")"
+CONFIG_DIR="${CLAUDE_CODE_ENV_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-code-env}"
+PROFILES_DIR="$CONFIG_DIR/profiles"
+DEFAULT_FILE="$CONFIG_DIR/default"
+CLAUDE_BIN="${CLAUDE_CODE_BIN:-claude}"
+
+usage() {
+	cat <<EOF
+Usage:
+  $ME run [profile] [-- claude_args...]
+  $ME list
+  $ME add <profile> [--no-edit] [--force]
+  $ME edit <profile>
+  $ME default [profile]
+  $ME rm <profile>
+  $ME path [profile]
+
+Commands:
+  run          Load a profile and start Claude Code. Uses the default profile when omitted.
+  list         List available profiles and mark the default one.
+  add          Create a profile file and open it in \$EDITOR unless --no-edit is used.
+  edit         Edit an existing profile.
+  default      Show or set the default profile.
+  rm           Remove a profile. If it is the default, the default setting is cleared.
+  path         Print the config directory or a profile file path.
+
+Environment:
+  CLAUDE_CODE_ENV_DIR  Override config directory.
+  CLAUDE_CODE_BIN      Override Claude Code command. Default: claude
+  EDITOR               Editor for add/edit. Default: vi
+
+Profile files live in:
+  $PROFILES_DIR
+
+Profile format:
+  ANTHROPIC_API_KEY=sk-ant-...
+  export ANTHROPIC_BASE_URL=https://api.example.com
+
+Examples:
+  $ME add work
+  $ME default work
+  $ME run -- --model opus
+  $ME run personal -- --dangerously-skip-permissions
+EOF
+}
+
+die() {
+	echo "Error: $*" >&2
+	exit 1
+}
+
+ensure_config_dir() {
+	mkdir -p "$PROFILES_DIR"
+	chmod 700 "$CONFIG_DIR" "$PROFILES_DIR" 2>/dev/null || true
+}
+
+validate_profile_name() {
+	local profile="$1"
+
+	[[ -n "$profile" ]] || die "profile name is required"
+	[[ "$profile" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid profile name: $profile"
+	[[ "$profile" != "." && "$profile" != ".." ]] || die "invalid profile name: $profile"
+}
+
+profile_path() {
+	local profile="$1"
+	validate_profile_name "$profile"
+	echo "$PROFILES_DIR/$profile.env"
+}
+
+read_default_profile() {
+	if [[ -f "$DEFAULT_FILE" ]]; then
+		sed -n '1p' "$DEFAULT_FILE"
+	fi
+}
+
+require_profile() {
+	local profile="$1"
+	local path
+
+	path="$(profile_path "$profile")"
+	[[ -f "$path" ]] || die "profile not found: $profile"
+	echo "$path"
+}
+
+open_editor() {
+	local path="$1"
+	"${EDITOR:-vi}" "$path"
+}
+
+create_profile_template() {
+	local path="$1"
+	local old_umask
+
+	old_umask="$(umask)"
+	umask 077
+	cat >"$path" <<'EOF'
+# Claude Code environment variables.
+# Lines are loaded as a Bash environment file.
+#
+# Examples:
+# ANTHROPIC_API_KEY=sk-ant-...
+# ANTHROPIC_BASE_URL=https://api.example.com
+# CLAUDE_CODE_USE_BEDROCK=1
+EOF
+	umask "$old_umask"
+	chmod 600 "$path" 2>/dev/null || true
+}
+
+cmd_list() {
+	ensure_config_dir
+
+	local default_profile
+	default_profile="$(read_default_profile)"
+
+	shopt -s nullglob
+	local files=("$PROFILES_DIR"/*.env)
+	shopt -u nullglob
+
+	if [[ ${#files[@]} -eq 0 ]]; then
+		echo "No profiles found in $PROFILES_DIR"
+		return
+	fi
+
+	local file profile marker
+	for file in "${files[@]}"; do
+		profile="$(basename "$file" .env)"
+		marker=" "
+		if [[ "$profile" == "$default_profile" ]]; then
+			marker="*"
+		fi
+		printf "%s %s\n" "$marker" "$profile"
+	done
+}
+
+cmd_add() {
+	ensure_config_dir
+	[[ $# -ge 1 ]] || die "add requires a profile name"
+
+	local profile="$1"
+	shift
+	validate_profile_name "$profile"
+
+	local edit_after=1
+	local force=0
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--no-edit)
+			edit_after=0
+			;;
+		--force)
+			force=1
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		*)
+			die "unknown add option: $1"
+			;;
+		esac
+		shift
+	done
+
+	local path
+	path="$(profile_path "$profile")"
+	if [[ -e "$path" && "$force" -ne 1 ]]; then
+		die "profile already exists: $profile"
+	fi
+
+	create_profile_template "$path"
+	echo "Created: $path"
+
+	if [[ "$edit_after" -eq 1 ]]; then
+		open_editor "$path"
+	fi
+}
+
+cmd_edit() {
+	ensure_config_dir
+	[[ $# -eq 1 ]] || die "edit requires exactly one profile name"
+
+	local path
+	path="$(require_profile "$1")"
+	open_editor "$path"
+}
+
+cmd_default() {
+	ensure_config_dir
+
+	if [[ $# -eq 0 ]]; then
+		local default_profile
+		default_profile="$(read_default_profile)"
+		if [[ -z "$default_profile" ]]; then
+			echo "No default profile set"
+		else
+			echo "$default_profile"
+		fi
+		return
+	fi
+
+	[[ $# -eq 1 ]] || die "default accepts at most one profile name"
+	require_profile "$1" >/dev/null
+	printf "%s\n" "$1" >"$DEFAULT_FILE"
+	chmod 600 "$DEFAULT_FILE" 2>/dev/null || true
+	echo "Default profile: $1"
+}
+
+cmd_rm() {
+	ensure_config_dir
+	[[ $# -eq 1 ]] || die "rm requires exactly one profile name"
+
+	local profile="$1"
+	local path
+	path="$(require_profile "$profile")"
+	rm -i "$path"
+
+	if [[ "$(read_default_profile)" == "$profile" && ! -f "$path" ]]; then
+		rm -f "$DEFAULT_FILE"
+		echo "Default profile cleared"
+	fi
+}
+
+cmd_path() {
+	ensure_config_dir
+
+	if [[ $# -eq 0 ]]; then
+		echo "$CONFIG_DIR"
+		return
+	fi
+
+	[[ $# -eq 1 ]] || die "path accepts at most one profile name"
+	profile_path "$1"
+}
+
+cmd_run() {
+	ensure_config_dir
+
+	local profile=""
+	local claude_args=()
+
+	if [[ $# -gt 0 && "$1" != "--" ]]; then
+		profile="$1"
+		shift
+	fi
+
+	if [[ $# -gt 0 ]]; then
+		[[ "$1" == "--" ]] || die "unexpected argument: $1"
+		shift
+		claude_args=("$@")
+	fi
+
+	if [[ -z "$profile" ]]; then
+		profile="$(read_default_profile)"
+		[[ -n "$profile" ]] || die "no profile specified and no default profile set"
+	fi
+
+	local path
+	path="$(require_profile "$profile")"
+
+	set +u
+	set -a
+	# shellcheck disable=SC1090
+	source "$path"
+	set +a
+	set -u
+
+	exec "$CLAUDE_BIN" "${claude_args[@]}"
+}
+
+main() {
+	local command="${1:-run}"
+	if [[ $# -gt 0 ]]; then
+		shift
+	fi
+
+	case "$command" in
+	run)
+		cmd_run "$@"
+		;;
+	list | ls)
+		cmd_list "$@"
+		;;
+	add | new)
+		cmd_add "$@"
+		;;
+	edit)
+		cmd_edit "$@"
+		;;
+	default | set-default)
+		cmd_default "$@"
+		;;
+	rm | remove | delete)
+		cmd_rm "$@"
+		;;
+	path)
+		cmd_path "$@"
+		;;
+	-h | --help | help)
+		usage
+		;;
+	*)
+		cmd_run "$command" "$@"
+		;;
+	esac
+}
+
+main "$@"
