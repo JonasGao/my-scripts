@@ -11,7 +11,7 @@ CLAUDE_BIN="${CLAUDE_CODE_BIN:-claude}"
 usage() {
 	cat <<EOF
 Usage:
-  $ME run [profile] [-- claude_args...]
+  $ME run [profile] [-n|--no-skip-permissions] [-- claude_args...]
   $ME list
   $ME add <profile> [--no-edit] [--force]
   $ME edit <profile>
@@ -21,6 +21,8 @@ Usage:
 
 Commands:
   run          Load a profile and start Claude Code. Uses the default profile when omitted.
+               By default Claude Code is started with --dangerously-skip-permissions.
+               Pass --no-skip-permissions to disable that behavior.
   list         List available profiles and mark the default one.
   add          Create a profile file and open it in \$EDITOR unless --no-edit is used.
   edit         Edit an existing profile.
@@ -44,6 +46,7 @@ Examples:
   $ME add work
   $ME default work
   $ME run -- --model opus
+  $ME run --no-skip-permissions
   $ME run personal -- --dangerously-skip-permissions
 EOF
 }
@@ -241,18 +244,30 @@ cmd_run() {
 	ensure_config_dir
 
 	local profile=""
+	local skip_permissions=1
 	local claude_args=()
 
-	if [[ $# -gt 0 && "$1" != "--" ]]; then
-		profile="$1"
-		shift
-	fi
-
-	if [[ $# -gt 0 ]]; then
-		[[ "$1" == "--" ]] || die "unexpected argument: $1"
-		shift
-		claude_args=("$@")
-	fi
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		-n | --no-skip-permissions)
+			skip_permissions=0
+			shift
+			;;
+		--)
+			shift
+			claude_args=("$@")
+			break
+			;;
+		*)
+			if [[ -z "$profile" ]]; then
+				profile="$1"
+				shift
+			else
+				die "unexpected argument: $1"
+			fi
+			;;
+		esac
+	done
 
 	if [[ -z "$profile" ]]; then
 		profile="$(read_default_profile)"
@@ -268,6 +283,10 @@ cmd_run() {
 	source "$path"
 	set +a
 	set -u
+
+	if [[ "$skip_permissions" -eq 1 ]]; then
+		claude_args=("--dangerously-skip-permissions" "${claude_args[@]}")
+	fi
 
 	exec "$CLAUDE_BIN" "${claude_args[@]}"
 }
