@@ -21,6 +21,7 @@ NO_PROXY_VAL="${NO_PROXY:-${no_proxy:-$DEFAULT_NO_PROXY}}"
 # XDG 规范配置路径: ${XDG_CONFIG_HOME:-~/.config}/px/proxies
 PX_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/px"
 PX_CONFIG_FILE="$PX_CONFIG_DIR/proxies"
+PX_DEFAULT_FILE="$PX_CONFIG_DIR/default"
 
 info() { echo -e "\033[32m[INFO] $1\033[0m"; }
 error() { echo -e "\033[31m[ERROR] $1\033[0m"; }
@@ -75,10 +76,17 @@ _px_list_profiles() {
 		tip "使用 px -a <名称> <地址> 添加代理配置"
 		return 1
 	fi
+	local default_name
+	default_name=$(_px_get_default_name)
 	echo -e "\033[36m已保存的代理配置:\033[0m"
 	while IFS='=' read -r name url; do
-		printf "  \033[33m%-16s\033[0m → %s\n" "$name" "$url"
+		local mark=" "
+		[ "$name" = "$default_name" ] && mark="*"
+		printf " %s \033[33m%-16s\033[0m → %s\n" "$mark" "$name" "$url"
 	done <"$PX_CONFIG_FILE"
+	if [ -n "$default_name" ]; then
+		echo -e "  \033[2m* 当前默认\033[0m"
+	fi
 }
 
 _px_add_profile() {
@@ -126,6 +134,14 @@ _px_delete_profile() {
 	if [ ! -s "$PX_CONFIG_FILE" ]; then
 		rm -f "$PX_CONFIG_FILE"
 	fi
+
+	# 如果删除的是默认代理，同时清除默认设置
+	local default_name
+	default_name=$(_px_get_default_name)
+	if [ "$default_name" = "$name" ]; then
+		rm -f "$PX_DEFAULT_FILE"
+		tip "已删除的 '$name' 是默认代理，已恢复为内置默认"
+	fi
 }
 
 _px_get_profile() {
@@ -143,6 +159,44 @@ _px_get_profile() {
 		return 1
 	fi
 	echo "$url"
+}
+
+# 获取当前生效的默认代理 URL
+_px_get_default_proxy() {
+	if [ -f "$PX_DEFAULT_FILE" ]; then
+		local name
+		name=$(cat "$PX_DEFAULT_FILE" 2>/dev/null)
+		if [ -n "$name" ] && grep -q "^${name}=" "$PX_CONFIG_FILE" 2>/dev/null; then
+			grep "^${name}=" "$PX_CONFIG_FILE" 2>/dev/null | head -1 | cut -d= -f2-
+			return 0
+		fi
+	fi
+	echo "$DEFAULT_PROXY"
+}
+
+# 获取默认代理名称（没有则返回空）
+_px_get_default_name() {
+	if [ -f "$PX_DEFAULT_FILE" ]; then
+		cat "$PX_DEFAULT_FILE" 2>/dev/null
+	fi
+}
+
+# 设置/清除默认代理配置
+_px_set_default() {
+	local name="$1"
+	if [ -z "$name" ]; then
+		rm -f "$PX_DEFAULT_FILE"
+		info "已恢复为内置默认代理: $DEFAULT_PROXY"
+		return 0
+	fi
+	if ! grep -q "^${name}=" "$PX_CONFIG_FILE" 2>/dev/null; then
+		error "代理名称 '$name' 不存在，请先使用 px -a 添加"
+		tip "使用 px -l 查看已保存的代理配置"
+		return 1
+	fi
+	_px_ensure_config_dir || return 1
+	echo "$name" >"$PX_DEFAULT_FILE"
+	info "已将 '$name' 设为默认代理"
 }
 
 # ============================================================
@@ -193,12 +247,16 @@ _px_help() {
 	echo "  px -l                   列出已保存的代理配置"
 	echo "  px -a <名称> <地址>     添加代理配置"
 	echo "  px -d <名称>            删除代理配置"
+	echo "  px -D [<名称>]          设置/清除默认代理配置"
 	echo ""
 	echo -e "\033[1m其他\033[0m"
 	echo "  px -h, --help           显示此帮助信息"
 	echo ""
 	echo -e "\033[2m配置文件: ${PX_CONFIG_FILE}\033[0m"
-	echo -e "\033[2m默认代理: ${DEFAULT_PROXY}\033[0m"
+	echo -e "\033[2m内置默认代理: ${DEFAULT_PROXY}\033[0m"
+	if [ -f "$PX_DEFAULT_FILE" ]; then
+		echo -e "\033[2m当前默认配置: $(cat "$PX_DEFAULT_FILE" 2>/dev/null)\033[0m"
+	fi
 }
 
 # ============================================================
@@ -237,15 +295,41 @@ if [ "$1" = "-d" ]; then
 	_px_done $?
 fi
 
+# -D：设置/清除默认代理配置
+if [ "$1" = "-D" ]; then
+	if [ $# -eq 1 ]; then
+		_px_set_default ""
+		_px_done $?
+	elif [ $# -eq 2 ]; then
+		_px_set_default "$2" || _px_done $?
+		# source 模式下同时应用到当前 shell
+		if [ "$_PX_MODE" = "source" ]; then
+			_px_url=$(_px_get_default_proxy)
+			_px_set_env "$_px_url"
+			info "已应用默认代理: $_px_url"
+			info "已自动设置 no_proxy：$NO_PROXY_VAL"
+			unset _px_url
+		fi
+		_px_done 0
+	else
+		error "用法: px -D [<名称>]"
+		tip "  px -D          清除默认代理设置，恢复内置默认"
+		tip "  px -D <名称>   将指定代理设为默认"
+		_px_done 1
+	fi
+fi
+
 # ============================================================
 # SOURCE 模式：修改当前 shell 环境变量
 # ============================================================
 if [ "$_PX_MODE" = "source" ]; then
 	if [ $# -eq 0 ]; then
-		_px_set_env "$DEFAULT_PROXY"
-		info "已自动设置默认代理：$DEFAULT_PROXY"
+		_px_proxy=$(_px_get_default_proxy)
+		_px_set_env "$_px_proxy"
+		info "已自动设置默认代理：$_px_proxy"
 		info "已自动设置 no_proxy：$NO_PROXY_VAL"
 		tip "执行 px -v 可查看当前配置"
+		unset _px_proxy
 		return 0
 	fi
 
@@ -352,7 +436,7 @@ if [ "$1" = "-u" ]; then
 	exit $_px_exit_code
 fi
 
-_px_proxy="${HTTP_PROXY:-$DEFAULT_PROXY}"
+_px_proxy="${HTTP_PROXY:-$(_px_get_default_proxy)}"
 info "使用代理 $_px_proxy 运行: $*"
 _px_run_with_proxy "$_px_proxy" "$@"
 exit $?
