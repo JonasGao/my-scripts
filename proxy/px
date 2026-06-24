@@ -91,7 +91,7 @@ _px_add_profile() {
 	fi
 
 	# URL 校验
-	if [[ ! "$url" =~ ^(http|https|socks5)://.+:[0-9]+$ ]]; then
+	if [[ ! "$url" =~ ^(http|https|socks5|socks5h)://.+:[0-9]+$ ]]; then
 		error "代理地址格式错误！示例：http://127.0.0.1:7890 或 socks5://127.0.0.1:7891"
 		return 1
 	fi
@@ -272,7 +272,7 @@ if [ "$_PX_MODE" = "source" ]; then
 			return 1
 		fi
 		_px_proxy_addr="$2"
-		if [[ ! "$_px_proxy_addr" =~ ^(http|https|socks5)://.+:[0-9]+$ ]]; then
+		if [[ ! "$_px_proxy_addr" =~ ^(http|https|socks5|socks5h)://.+:[0-9]+$ ]]; then
 			error "代理地址格式错误！示例：http://127.0.0.1:7890 或 socks5://127.0.0.1:7891"
 			unset _px_proxy_addr
 			return 1
@@ -326,7 +326,7 @@ if [ "$1" = "-s" ]; then
 		exit 1
 	fi
 	_px_proxy_addr="$2"
-	if [[ ! "$_px_proxy_addr" =~ ^(http|https|socks5)://.+:[0-9]+$ ]]; then
+	if [[ ! "$_px_proxy_addr" =~ ^(http|https|socks5|socks5h)://.+:[0-9]+$ ]]; then
 		error "代理地址格式错误！示例：http://127.0.0.1:7890 或 socks5://127.0.0.1:7891"
 		exit 1
 	fi
