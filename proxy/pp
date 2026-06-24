@@ -1,0 +1,104 @@
+#!/bin/bash
+
+# 快速设置/清除/查看 HTTP(S)_PROXY 环境变量（函数名：pp，别名：ppp）
+# 使用方式：
+#   pp                  → 自动设置默认代理
+#   pp -c               → 清除所有代理变量
+#   pp -v               → 查看当前代理配置
+#   pp -s <地址>        → 设置自定义代理
+pp() {
+    local DEFAULT_PROXY="http://proxy0.lan:7890"
+    local DEFAULT_NO_PROXY="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local"
+    # 优先使用环境已有的 NO_PROXY，否则用默认值
+    local NO_PROXY_VAL="${NO_PROXY:-${no_proxy:-$DEFAULT_NO_PROXY}}"
+
+    info()  { echo -e "\033[32m[INFO] $1\033[0m"; }
+    error() { echo -e "\033[31m[ERROR] $1\033[0m"; }
+    tip()   { echo -e "\033[36m[TIP] $1\033[0m"; }
+
+    # ========== 无参数：自动设置默认代理 ==========
+    if [ $# -eq 0 ]; then
+        export HTTP_PROXY="$DEFAULT_PROXY"
+        export HTTPS_PROXY="$DEFAULT_PROXY"
+        export http_proxy="$DEFAULT_PROXY"
+        export https_proxy="$DEFAULT_PROXY"
+        export NO_PROXY="$NO_PROXY_VAL"
+        export no_proxy="$NO_PROXY_VAL"
+        info "已自动设置默认代理：$DEFAULT_PROXY"
+        info "已自动设置 no_proxy：$NO_PROXY_VAL"
+        tip "执行 pp -v 可查看当前配置"
+        return 0
+    fi
+
+    # ========== -c：清除代理 ==========
+    if [ "$1" = "-c" ]; then
+        unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy
+        info "已清除所有 HTTP(S)_PROXY 及 NO_PROXY 环境变量"
+        return 0
+    fi
+
+    # ========== -v：查看当前配置 ==========
+    if [ "$1" = "-v" ]; then
+        info "当前 HTTP(S)_PROXY 配置："
+        echo "  HTTP_PROXY:  ${HTTP_PROXY:-未设置}"
+        echo "  HTTPS_PROXY: ${HTTPS_PROXY:-未设置}"
+        echo "  http_proxy:  ${http_proxy:-未设置}"
+        echo "  https_proxy: ${https_proxy:-未设置}"
+        echo "  NO_PROXY:    ${NO_PROXY:-未设置}"
+        echo "  no_proxy:    ${no_proxy:-未设置}"
+        return 0
+    fi
+
+    # ========== -s：设置自定义代理 ==========
+    if [ "$1" = "-s" ]; then
+        if [ $# -ne 2 ]; then
+            error "使用错误！pp -s 后必须跟代理地址，示例：pp -s http://127.0.0.1:7891"
+            return 1
+        fi
+
+        local proxy_addr="$2"
+        if [[ ! "$proxy_addr" =~ ^(http|https|socks5)://.+:[0-9]+$ ]]; then
+            error "代理地址格式错误！示例：http://127.0.0.1:7890 或 socks5://127.0.0.1:7891"
+            return 1
+        fi
+
+        export HTTP_PROXY="$proxy_addr"
+        export HTTPS_PROXY="$proxy_addr"
+        export http_proxy="$proxy_addr"
+        export https_proxy="$proxy_addr"
+        export NO_PROXY="$NO_PROXY_VAL"
+        export no_proxy="$NO_PROXY_VAL"
+        info "已设置自定义代理：$proxy_addr"
+        info "已自动设置 no_proxy：$NO_PROXY_VAL"
+        tip "执行 pp -v 可查看当前配置"
+        return 0
+    fi
+
+    # ========== 未知参数 ==========
+    error "未知参数: $*"
+    tip "用法: pp | pp -c | pp -v | pp -s <地址>"
+    return 1
+}
+
+alias ppp=pp
+
+# ========== bash completion for pp / ppp ==========
+_pp_completion() {
+    local cur cmd
+    cur="${COMP_WORDS[COMP_CWORD]}"
+
+    # 第一参数：只补全 flags
+    if [ $COMP_CWORD -eq 1 ]; then
+        COMPREPLY=($(compgen -W '-c -v -s' -- "$cur"))
+        return
+    fi
+
+    # 第一参数是 -s：第二个是代理地址（不补全）
+    if [ "${COMP_WORDS[1]}" = "-s" ]; then
+        COMPREPLY=()
+        return
+    fi
+}
+
+complete -F _pp_completion pp
+complete -F _pp_completion ppp

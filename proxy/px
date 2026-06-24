@@ -1,0 +1,152 @@
+#!/bin/bash
+
+# px - 快速设置/清除/查看 HTTP(S)_PROXY 环境变量 + 代理执行命令
+# 使用方式：
+#   . px                  → source 模式：设置当前 shell 的全局代理
+#   . px -c               → source 模式：清除当前 shell 的代理变量
+#   . px -v               → source 模式：查看当前 shell 代理配置
+#   . px -s <地址>        → source 模式：设置当前 shell 自定义代理
+#   px <命令> [参数..]    → 子进程模式：仅对运行命令生效代理
+#   px -s <地址> <命令>   → 子进程模式：使用指定代理运行命令
+
+DEFAULT_PROXY="http://proxy0.lan:7890"
+DEFAULT_NO_PROXY="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local"
+NO_PROXY_VAL="${NO_PROXY:-${no_proxy:-$DEFAULT_NO_PROXY}}"
+
+info()  { echo -e "\033[32m[INFO] $1\033[0m"; }
+error() { echo -e "\033[31m[ERROR] $1\033[0m"; }
+tip()   { echo -e "\033[36m[TIP] $1\033[0m"; }
+
+# 检测是否被 source（当前 shell 执行）
+_is_sourced() {
+    if [ -n "${BASH_VERSION:-}" ]; then
+        [[ "${BASH_SOURCE[0]}" != "${0}" ]]
+        return
+    fi
+    if [ -n "${ZSH_VERSION:-}" ]; then
+        [[ "${ZSH_EVAL_CONTEXT:-}" == toplevel:* ]]
+        return
+    fi
+    return 1
+}
+
+# source 模式：export 到当前 shell
+_px_set_env() {
+    local proxy="$1"
+    export HTTP_PROXY="$proxy"
+    export HTTPS_PROXY="$proxy"
+    export http_proxy="$proxy"
+    export https_proxy="$proxy"
+    export NO_PROXY="$NO_PROXY_VAL"
+    export no_proxy="$NO_PROXY_VAL"
+}
+
+# source 模式：unset 当前 shell 变量
+_px_unset_env() {
+    unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy NO_PROXY no_proxy
+}
+
+# 子进程模式：仅对单次命令生效
+_px_run_with_proxy() {
+    local proxy="$1"
+    shift
+    HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" \
+        http_proxy="$proxy" https_proxy="$proxy" \
+        NO_PROXY="$NO_PROXY_VAL" no_proxy="$NO_PROXY_VAL" \
+        "$@"
+}
+
+if _is_sourced; then
+    # ============================================================
+    # SOURCE 模式：修改当前 shell 环境变量
+    # ============================================================
+    if [ $# -eq 0 ]; then
+        _px_set_env "$DEFAULT_PROXY"
+        info "已自动设置默认代理：$DEFAULT_PROXY"
+        info "已自动设置 no_proxy：$NO_PROXY_VAL"
+        tip "执行 px -v 可查看当前配置"
+        return 0
+    fi
+
+    if [ "$1" = "-c" ]; then
+        _px_unset_env
+        info "已清除所有 HTTP(S)_PROXY 及 NO_PROXY 环境变量"
+        return 0
+    fi
+
+    if [ "$1" = "-v" ]; then
+        info "当前 HTTP(S)_PROXY 配置："
+        echo "  HTTP_PROXY:  ${HTTP_PROXY:-未设置}"
+        echo "  HTTPS_PROXY: ${HTTPS_PROXY:-未设置}"
+        echo "  http_proxy:  ${http_proxy:-未设置}"
+        echo "  https_proxy: ${https_proxy:-未设置}"
+        echo "  NO_PROXY:    ${NO_PROXY:-未设置}"
+        echo "  no_proxy:    ${no_proxy:-未设置}"
+        return 0
+    fi
+
+    if [ "$1" = "-s" ]; then
+        if [ $# -lt 2 ]; then
+            error "使用错误！px -s 后必须跟代理地址，示例：px -s http://127.0.0.1:7891"
+            return 1
+        fi
+        _px_proxy_addr="$2"
+        if [[ ! "$_px_proxy_addr" =~ ^(http|https|socks5)://.+:[0-9]+$ ]]; then
+            error "代理地址格式错误！示例：http://127.0.0.1:7890 或 socks5://127.0.0.1:7891"
+            unset _px_proxy_addr
+            return 1
+        fi
+        _px_set_env "$_px_proxy_addr"
+        unset _px_proxy_addr
+        info "已设置自定义代理：$2"
+        info "已自动设置 no_proxy：$NO_PROXY_VAL"
+        tip "执行 px -v 可查看当前配置"
+        return 0
+    fi
+
+    error "source 模式下不支持直接跟命令。请直接执行 px <命令> [参数..]"
+    return 1
+else
+    # ============================================================
+    # 子进程模式：仅对运行命令生效
+    # ============================================================
+    if [ $# -eq 0 ]; then
+        error "直接执行 px 时必须跟上命令，或使用 source/. 来设置当前 shell 环境变量"
+        tip "用法："
+        tip "  . px           # 设置当前 shell 的全局代理"
+        tip "  px curl ...    # 仅对 curl 命令使用代理"
+        exit 1
+    fi
+
+    if [ "$1" = "-c" ] || [ "$1" = "-v" ]; then
+        error "直接执行时 $1 不可用，请使用 . px $1"
+        exit 1
+    fi
+
+    if [ "$1" = "-s" ]; then
+        if [ $# -lt 3 ]; then
+            error "使用错误！px -s <代理地址> <命令> [参数..]"
+            exit 1
+        fi
+        _px_proxy_addr="$2"
+        if [[ ! "$_px_proxy_addr" =~ ^(http|https|socks5)://.+:[0-9]+$ ]]; then
+            error "代理地址格式错误！示例：http://127.0.0.1:7890 或 socks5://127.0.0.1:7891"
+            unset _px_proxy_addr
+            exit 1
+        fi
+        shift 2
+        info "使用代理 $_px_proxy_addr 运行: $*"
+        _px_run_with_proxy "$_px_proxy_addr" "$@"
+        _px_exit_code=$?
+        unset _px_proxy_addr
+        exit $_px_exit_code
+        exit $?
+    fi
+
+    _px_proxy="${HTTP_PROXY:-$DEFAULT_PROXY}"
+    info "使用代理 $_px_proxy 运行: $*"
+    _px_run_with_proxy "$_px_proxy" "$@"
+    _px_exit_code=$?
+    unset _px_proxy
+    exit $_px_exit_code
+fi
