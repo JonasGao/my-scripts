@@ -126,7 +126,8 @@ _px_delete_profile() {
 
 	# 跨平台安全删除（避免 sed -i 兼容问题）
 	local tmpfile="${PX_CONFIG_FILE}.tmp.$$"
-	grep -v "^${name}=" "$PX_CONFIG_FILE" >"$tmpfile" && mv "$tmpfile" "$PX_CONFIG_FILE"
+	grep -v "^${name}=" "$PX_CONFIG_FILE" >"$tmpfile" || true
+	mv "$tmpfile" "$PX_CONFIG_FILE"
 	rm -f "$tmpfile"
 	info "已删除代理: $name"
 
