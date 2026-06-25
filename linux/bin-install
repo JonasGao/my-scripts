@@ -155,7 +155,7 @@ download() {
 
     while [[ $attempt -le $RETRY_COUNT ]]; do
         info "下载: $url (第 $attempt/$RETRY_COUNT 次)"
-        if curl -fSL --connect-timeout 30 --max-time 600 -o "$dest" "$url" 2>&1; then
+        if curl -fSL -C - --connect-timeout 30 --max-time 600 -o "$dest" "$url" 2>&1; then
             info "下载完成: $(du -h "$dest" | cut -f1)"
             return 0
         fi
