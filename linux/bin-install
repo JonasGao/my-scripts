@@ -147,7 +147,35 @@ archive_basename() {
     echo "$name"
 }
 
-# ─── 下载 ───────────────────────────────────────────────────────────────────
+# ─── 下载器选择 ───────────────────────────────────────────────────────────────
+# 优先 aria2c（多线程 + 续传），不可用时退回 curl
+_download() {
+    local url="$1"
+    local dest="$2"
+
+    if command -v aria2c &>/dev/null; then
+        local aria_opts=(--continue --max-connection-per-server=4 --split=4
+                         --max-tries="$RETRY_COUNT" --retry-wait="$RETRY_DELAY"
+                         --connect-timeout=30 --timeout=600
+                         --out="$dest")
+
+        # aria2c 不自动读取代理环境变量，需显式传入
+        local proxy="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
+        if [[ -n "$proxy" ]]; then
+            aria_opts+=(--all-proxy="$proxy")
+        fi
+
+        info "使用 aria2c 下载"
+        aria2c "${aria_opts[@]}" "$url" 2>&1
+        return $?
+    fi
+
+     # fallback to curl
+     info "使用 curl 下载"
+     curl -fSL -C - --connect-timeout 30 --max-time 600 -o "$dest" "$url" 2>&1
+}
+
+# ─── 下载重试 ─────────────────────────────────────────────────────────────────
 download() {
     local url="$1"
     local dest="$2"
@@ -155,7 +183,7 @@ download() {
 
     while [[ $attempt -le $RETRY_COUNT ]]; do
         info "下载: $url (第 $attempt/$RETRY_COUNT 次)"
-        if curl -fSL -C - --connect-timeout 30 --max-time 600 -o "$dest" "$url" 2>&1; then
+        if _download "$url" "$dest"; then
             info "下载完成: $(du -h "$dest" | cut -f1)"
             return 0
         fi
