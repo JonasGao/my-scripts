@@ -168,6 +168,28 @@ download() {
     die "下载失败，已重试 $RETRY_COUNT 次: $url"
 }
 
+# ─── 路径穿越校验 ───────────────────────────────────────────────────────────
+validate_archive() {
+    local archive="$1"
+    local fmt="$2"
+
+    case "$fmt" in
+        tar.gz|tar.xz|tar.bz2|tar)
+            if tar -tf "$archive" 2>/dev/null | grep -Eq '(^\.\./|/\.\./|^/)' ; then
+                die "归档包含不安全的路径穿越条目，拒绝解压"
+            fi
+            ;;
+        zip)
+            if unzip -l "$archive" 2>/dev/null | grep -Eq '(^\.\./|/\.\./)' ; then
+                die "归档包含不安全的路径穿越条目，拒绝解压"
+            fi
+            ;;
+        gz|xz|bz2)
+            # 单文件格式，天然安全（输出文件名由我们指定）
+            ;;
+    esac
+}
+
 # ─── 解压 ───────────────────────────────────────────────────────────────────
 extract() {
     local archive="$1"
@@ -445,6 +467,9 @@ main() {
 
     # 下载
     download "$url" "$archive_file"
+
+    # 校验归档安全性
+    validate_archive "$archive_file" "$fmt"
 
     # 解压
     extract "$archive_file" "$extract_dir" "$fmt"
