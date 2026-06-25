@@ -157,7 +157,8 @@ _download() {
         local aria_opts=(--continue --max-connection-per-server=4 --split=4
                          --max-tries="$RETRY_COUNT" --retry-wait="$RETRY_DELAY"
                          --connect-timeout=30 --timeout=600
-                         --out="$dest")
+                         --dir="$(dirname "$dest")"
+                         --out="$(basename "$dest")")
 
         # aria2c 不自动读取代理环境变量，需显式传入
         local proxy="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
