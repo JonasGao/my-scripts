@@ -1,0 +1,466 @@
+#!/bin/bash
+
+# bin-install — 下载 Linux 预编译二进制压缩包并安装到 ~/.local/bin
+#
+# 用法:
+#   bin-install <URL>              直接下载安装
+#   bin-install -t <格式> <URL>     手动指定压缩格式
+#   bin-install                     无参数，fzf 交互选择历史 URL
+#   bin-install -h|--help           显示帮助
+#   bin-install --history           列出历史 URL
+#   bin-install completion bash     输出 bash 补全脚本
+#   bin-install completion zsh      输出 zsh 补全脚本
+
+set -euo pipefail
+
+# ─── 配置 ───────────────────────────────────────────────────────────────────
+INSTALL_DIR="${HOME}/.local/bin"
+HISTORY_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/bin-install/history"
+TMP_BASE="${TMPDIR:-/tmp}/bin-install-$$"
+RETRY_COUNT=3
+RETRY_DELAY=2
+
+# ─── 帮助 ───────────────────────────────────────────────────────────────────
+usage() {
+    cat << 'EOF'
+bin-install — 下载 Linux 预编译二进制压缩包并安装到 ~/.local/bin
+
+用法:
+  bin-install [选项] [URL]
+
+选项:
+  -t <格式>       手动指定压缩格式 (tar.gz, tar.xz, tar.bz2, tar, zip, gz, xz, bz2)
+  -h, --help      显示此帮助信息
+  --history       列出已记录的历史 URL
+  completion      输出 shell 补全脚本 (bash 或 zsh)
+
+格式:
+  脚本默认从 URL 后缀自动检测压缩格式，-t 可手动覆盖。
+
+  支持的格式:
+    .tar.gz  / .tgz       → tar.gz
+    .tar.xz  / .txz       → tar.xz
+    .tar.bz2 / .tbz2      → tar.bz2
+    .tar                   → tar
+    .zip                   → zip
+    .gz                    → gzip 单文件
+    .xz                    → xz 单文件
+    .bz2                   → bzip2 单文件
+
+示例:
+  bin-install https://github.com/foo/bar/releases/v1.0/tool-linux-amd64.tar.gz
+  bin-install -t zip https://example.com/tool.bin
+  bin-install                              # fzf 交互选择历史 URL
+
+历史:
+  URL 记录保存在 ~/.local/share/bin-install/history
+  每次成功下载的 URL 会被追加到历史（自动去重，最近使用的排最前）。
+
+安装路径:
+  二进制文件被安装到 ~/.local/bin（路径不存在则自动创建）。
+
+EOF
+}
+
+# ─── 消息输出 ───────────────────────────────────────────────────────────────
+info()  { echo -e "\033[1;32m[info]\033[0m $*"; }
+warn()  { echo -e "\033[1;33m[warn]\033[0m $*"; }
+error() { echo -e "\033[1;31m[error]\033[0m $*"; }
+die()   { error "$@"; exit 1; }
+
+# ─── 历史管理 ───────────────────────────────────────────────────────────────
+history_init() {
+    mkdir -p "$(dirname "$HISTORY_FILE")"
+    touch "$HISTORY_FILE"
+}
+
+history_list() {
+    history_init
+    if [[ -s "$HISTORY_FILE" ]]; then
+        nl -w3 -s' ' "$HISTORY_FILE"
+    else
+        echo "(empty)"
+    fi
+}
+
+history_add() {
+    local url="$1"
+    history_init
+    # 去重：先删除旧条目，再追加到文件头（MRU）
+    local tmp
+    tmp=$(mktemp)
+    echo "$url" > "$tmp"
+    if [[ -s "$HISTORY_FILE" ]]; then
+        grep -v -Fx "$url" "$HISTORY_FILE" >> "$tmp" 2>/dev/null || true
+    fi
+    mv "$tmp" "$HISTORY_FILE"
+}
+
+history_select_fzf() {
+    if ! command -v fzf &>/dev/null; then
+        die "fzf 未安装，无法交互选择。安装 fzf 或直接传 URL。"
+    fi
+    history_init
+    if [[ ! -s "$HISTORY_FILE" ]]; then
+        die "历史为空，请先使用 URL 参数下载一次。"
+    fi
+    tac "$HISTORY_FILE" | fzf --prompt="选择 URL: " --no-sort
+}
+
+# ─── 格式检测 ───────────────────────────────────────────────────────────────
+# 返回值: tar.gz, tar.xz, tar.bz2, tar, zip, gz, xz, bz2
+detect_format() {
+    local url="$1"
+    local fmt
+
+    # 去掉 URL 的 query string 和 fragment
+    local basename
+    basename=$(basename "$url" | sed 's/[?#].*//')
+
+    # 按后缀从具体到模糊的顺序匹配
+    case "$basename" in
+        *.tar.gz|*.tgz)    fmt="tar.gz" ;;
+        *.tar.xz|*.txz)    fmt="tar.xz" ;;
+        *.tar.bz2|*.tbz2)  fmt="tar.bz2" ;;
+        *.tar)              fmt="tar" ;;
+        *.zip)              fmt="zip" ;;
+        *.gz)               fmt="gz" ;;
+        *.xz)               fmt="xz" ;;
+        *.bz2)              fmt="bz2" ;;
+        *)
+            # URL 没有明确后缀时，尝试从 Content-Type 或文件名猜测
+            fmt=""
+            ;;
+    esac
+    echo "$fmt"
+}
+
+# 从归档名提取基础名（去掉所有后缀）
+# e.g. mytool-linux-amd64.tar.gz → mytool-linux-amd64
+# e.g. mytool.tar.xz → mytool
+archive_basename() {
+    local url="$1"
+    local name
+    name=$(basename "$url" | sed 's/[?#].*//')
+    # 去掉已知压缩后缀
+    name=$(echo "$name" | sed 's/\.tar\.gz$//; s/\.tgz$//; s/\.tar\.xz$//; s/\.txz$//; s/\.tar\.bz2$//; s/\.tbz2$//; s/\.tar$//; s/\.zip$//; s/\.gz$//; s/\.xz$//; s/\.bz2$//')
+    echo "$name"
+}
+
+# ─── 下载 ───────────────────────────────────────────────────────────────────
+download() {
+    local url="$1"
+    local dest="$2"
+    local attempt=1
+
+    while [[ $attempt -le $RETRY_COUNT ]]; do
+        info "下载: $url (第 $attempt/$RETRY_COUNT 次)"
+        if curl -fSL --connect-timeout 30 --max-time 600 -o "$dest" "$url" 2>&1; then
+            info "下载完成: $(du -h "$dest" | cut -f1)"
+            return 0
+        fi
+        warn "下载失败 (attempt $attempt/$RETRY_COUNT)"
+        ((attempt++))
+        if [[ $attempt -le $RETRY_COUNT ]]; then
+            sleep "$RETRY_DELAY"
+        fi
+    done
+    die "下载失败，已重试 $RETRY_COUNT 次: $url"
+}
+
+# ─── 解压 ───────────────────────────────────────────────────────────────────
+extract() {
+    local archive="$1"
+    local dest_dir="$2"
+    local fmt="$3"
+
+    mkdir -p "$dest_dir"
+
+    info "解压: $fmt → $dest_dir"
+
+    case "$fmt" in
+        tar.gz)  tar -xzf "$archive" -C "$dest_dir" ;;
+        tar.xz)  tar -xJf "$archive" -C "$dest_dir" ;;
+        tar.bz2) tar -xjf "$archive" -C "$dest_dir" ;;
+        tar)     tar -xf  "$archive" -C "$dest_dir" ;;
+        zip)     unzip -qo "$archive" -d "$dest_dir" ;;
+        gz)
+            local outname
+            outname=$(basename "$archive" .gz)
+            gunzip -c "$archive" > "$dest_dir/$outname"
+            chmod +x "$dest_dir/$outname" 2>/dev/null || true
+            ;;
+        xz)
+            local outname
+            outname=$(basename "$archive" .xz)
+            unxz -c "$archive" > "$dest_dir/$outname"
+            chmod +x "$dest_dir/$outname" 2>/dev/null || true
+            ;;
+        bz2)
+            local outname
+            outname=$(basename "$archive" .bz2)
+            bunzip2 -c "$archive" > "$dest_dir/$outname"
+            chmod +x "$dest_dir/$outname" 2>/dev/null || true
+            ;;
+        *) die "不支持的格式: $fmt" ;;
+    esac
+}
+
+# ─── 查找可执行文件 ─────────────────────────────────────────────────────────
+# 返回解压目录下所有可执行文件的相对路径列表
+find_binaries() {
+    local dir="$1"
+    find "$dir" -type f -executable | sort
+}
+
+# ─── 智能选择二进制 ─────────────────────────────────────────────────────────
+# 优先选和归档同名的，有多个则交互选择
+select_binary() {
+    local dir="$1"
+    local archive_name="$2"
+
+    local binaries
+    mapfile -t binaries < <(find_binaries "$dir")
+
+    if [[ ${#binaries[@]} -eq 0 ]]; then
+        # 没有可执行文件，列出所有文件让用户看看
+        warn "未找到可执行文件，解压目录内容:"
+        find "$dir" -type f | sort | while read -r f; do
+            echo "  ${f#$dir/}"
+        done
+        die "没有可执行文件。"
+    fi
+
+    if [[ ${#binaries[@]} -eq 1 ]]; then
+        echo "${binaries[0]}"
+        return
+    fi
+
+    # 多个可执行文件 — 优先匹配和归档同名的
+    local match=""
+    for b in "${binaries[@]}"; do
+        local bname
+        bname=$(basename "$b")
+        if [[ "$archive_name" == "$bname" ]] || [[ "$bname" == "$archive_name"* ]]; then
+            if [[ -z "$match" ]]; then
+                match="$b"
+            else
+                # 多个匹配，fallback 到交互选择
+                match=""
+                break
+            fi
+        fi
+    done
+
+    if [[ -n "$match" ]]; then
+        info "智能匹配: $(basename "$match")"
+        echo "$match"
+        return
+    fi
+
+    # 交互选择
+    warn "发现多个可执行文件，请选择:"
+    if command -v fzf &>/dev/null; then
+        printf '%s\n' "${binaries[@]}" | fzf --prompt="选择二进制: "
+    else
+        local i=1
+        for b in "${binaries[@]}"; do
+            echo "  [$i] ${b#$dir/}"
+            ((i++))
+        done
+        read -r -p "输入编号 (1-${#binaries[@]}): " choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#binaries[@]} )); then
+            echo "${binaries[$((choice - 1))]}"
+        else
+            die "无效选择: $choice"
+        fi
+    fi
+}
+
+# ─── 安装 ───────────────────────────────────────────────────────────────────
+install_binary() {
+    local src="$1"
+    local name
+    name=$(basename "$src")
+
+    mkdir -p "$INSTALL_DIR"
+
+    cp -f "$src" "$INSTALL_DIR/$name"
+    chmod +x "$INSTALL_DIR/$name"
+
+    info "已安装: $INSTALL_DIR/$name"
+
+    # 检查是否在 PATH 中
+    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+        warn "~/.local/bin 不在 PATH 中，请将以下行加入 ~/.bashrc:"
+        warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
+}
+
+# ─── 补全脚本生成 ───────────────────────────────────────────────────────────
+generate_bash_completion() {
+    cat << 'EOF'
+# bin-install bash completion
+
+_bin_install_completion() {
+    local cur prev words cword
+    _init_completion || return
+
+    case "$prev" in
+        -t)
+            COMPREPLY=($(compgen -W "tar.gz tar.xz tar.bz2 tar zip gz xz bz2" -- "$cur"))
+            return
+            ;;
+        completion)
+            COMPREPLY=($(compgen -W "bash zsh" -- "$cur"))
+            return
+            ;;
+    esac
+
+    # 加载历史 URL 作为补全
+    local history_file="${XDG_DATA_HOME:-$HOME/.local/share}/bin-install/history"
+    if [[ -f "$history_file" ]]; then
+        local urls
+        urls=$(tac "$history_file" 2>/dev/null)
+        COMPREPLY=($(compgen -W "$urls" -- "$cur"))
+    fi
+}
+complete -F _bin_install_completion bin-install
+EOF
+}
+
+generate_zsh_completion() {
+    cat << 'EOF'
+#compdef bin-install
+
+_bin_install() {
+    local -a args formats
+    formats=('tar.gz' 'tar.xz' 'tar.bz2' 'tar' 'zip' 'gz' 'xz' 'bz2')
+
+    _arguments \
+        '-t[指定压缩格式]:格式:($formats)' \
+        '-h[显示帮助]' \
+        '--help[显示帮助]' \
+        '--history[列出历史URL]' \
+        '1: :_bin_install_urls' \
+        '*:: :_default'
+
+    case "$words[1]" in
+        completion)
+            _alternative \
+                'shell:shell:(bash zsh)'
+            ;;
+    esac
+}
+
+_bin_install_urls() {
+    local history_file="${XDG_DATA_HOME:-$HOME/.local/share}/bin-install/history"
+    if [[ -f "$history_file" ]]; then
+        local -a urls
+        urls=("${(@f)$(tac "$history_file" 2>/dev/null)}")
+        _describe 'URL' urls
+    fi
+}
+
+_bin_install "$@"
+EOF
+}
+
+# ─── 主流程 ─────────────────────────────────────────────────────────────────
+main() {
+    local fmt=""
+    local url=""
+    local show_history=false
+
+    # 解析参数
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -t)
+                shift
+                [[ $# -eq 0 ]] && die "-t 需要指定格式"
+                fmt="$1"
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --history)
+                show_history=true
+                ;;
+            completion)
+                shift
+                case "${1:-}" in
+                    bash) generate_bash_completion; exit 0 ;;
+                    zsh)  generate_zsh_completion;  exit 0 ;;
+                    *)    die "用法: bin-install completion {bash|zsh}" ;;
+                esac
+                ;;
+            -*)
+                die "未知选项: $1 (使用 -h 查看帮助)"
+                ;;
+            *)
+                url="$1"
+                ;;
+        esac
+        shift
+    done
+
+    # --history 子命令
+    if $show_history; then
+        history_list
+        exit 0
+    fi
+
+    # 无 URL → fzf 选择历史
+    if [[ -z "$url" ]]; then
+        url=$(history_select_fzf)
+        echo "已选择: $url"
+    fi
+
+    # 自动检测格式
+    if [[ -z "$fmt" ]]; then
+        fmt=$(detect_format "$url")
+        if [[ -z "$fmt" ]]; then
+            die "无法从 URL 后缀检测格式，请使用 -t 手动指定。\n  URL: $url\n  支持: tar.gz, tar.xz, tar.bz2, tar, zip, gz, xz, bz2"
+        fi
+    fi
+
+    # 验证格式
+    case "$fmt" in
+        tar.gz|tar.xz|tar.bz2|tar|zip|gz|xz|bz2) ;;
+        *) die "不支持的格式: $fmt\n  支持: tar.gz, tar.xz, tar.bz2, tar, zip, gz, xz, bz2" ;;
+    esac
+
+    info "URL:  $url"
+    info "格式: $fmt"
+
+    # 创建临时目录
+    local tmpdir archive_file extract_dir
+    tmpdir="${TMP_BASE}"
+    archive_file="${tmpdir}/archive"
+    extract_dir="${tmpdir}/extracted"
+
+    trap "rm -rf '$tmpdir'" EXIT
+    mkdir -p "$tmpdir"
+
+    # 下载
+    download "$url" "$archive_file"
+
+    # 解压
+    extract "$archive_file" "$extract_dir" "$fmt"
+
+    # 选择二进制
+    local selected
+    selected=$(select_binary "$extract_dir" "$(archive_basename "$url")")
+    [[ -z "$selected" ]] && die "未选择任何文件。"
+
+    # 安装
+    install_binary "$selected"
+
+    # 记录历史
+    history_add "$url"
+
+    info "完成!"
+}
+
+main "$@"
