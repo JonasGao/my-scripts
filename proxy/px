@@ -13,6 +13,7 @@
 #   px -l                 → 列出已保存的代理配置
 #   px -a <名称> <地址>   → 添加代理配置
 #   px -d <名称>          → 删除代理配置
+#   px -t [<名称>]         → 测试代理连通性
 
 DEFAULT_PROXY="http://proxy0.lan:7890"
 DEFAULT_NO_PROXY="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.local"
@@ -200,6 +201,154 @@ _px_set_default() {
 	info "已将 '$name' 设为默认代理"
 }
 
+# 测试代理连通性
+_px_test_proxy() {
+	local proxy="$1"
+	local name="${2:-自定义}"
+	
+	info "测试代理: $name → $proxy"
+	
+	# 提取代理协议、主机和端口
+	local proxy_type="http"
+	local proxy_host=""
+	local proxy_port=""
+	
+	if [[ "$proxy" =~ ^(https?|socks5h?)://([^:]+):([0-9]+)$ ]]; then
+		proxy_type="${BASH_REMATCH[1]}"
+		proxy_host="${BASH_REMATCH[2]}"
+		proxy_port="${BASH_REMATCH[3]}"
+	else
+		error "无法解析代理地址格式"
+		return 1
+	fi
+	
+	echo "  协议: $proxy_type"
+	echo "  端口: $proxy_port"
+	
+	# 判断是域名还是IP，如果是域名则进行DNS解析
+	local is_ip=0
+	if [[ "$proxy_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		is_ip=1
+		echo "  主机: $proxy_host (IP地址)"
+	else
+		echo "  主机: $proxy_host (域名)"
+		echo -n "  DNS解析: "
+		local resolved_ip
+		resolved_ip=$(getent hosts "$proxy_host" 2>/dev/null | awk '{print $1; exit}')
+		if [ -n "$resolved_ip" ]; then
+			echo -e "\033[32m$resolved_ip\033[0m"
+			
+			# 检查是否有多个IP地址
+			local all_ips
+			all_ips=$(getent hosts "$proxy_host" 2>/dev/null | awk '{print $1}' | sort -u)
+			local ip_count
+			ip_count=$(echo "$all_ips" | wc -l)
+			if [ "$ip_count" -gt 1 ]; then
+				echo "  解析结果 ($ip_count 个IP地址):"
+				echo "$all_ips" | while read -r ip; do
+					echo "    - $ip"
+				done
+			fi
+		else
+			echo -e "\033[31m解析失败\033[0m"
+			error "无法解析域名: $proxy_host"
+			return 1
+		fi
+	fi
+	
+	# 测试超时时间（秒）
+	local timeout=10
+	echo ""
+	echo -e "\033[36m开始连通性测试...\033[0m"
+	echo "  超时时间: ${timeout}秒"
+	
+	# 测试 URL（使用多个可靠的外网地址）
+	local test_urls=(
+		"https://www.google.com"
+		"https://github.com"
+		"https://www.cloudflare.com"
+	)
+	echo "  测试目标: ${#test_urls[@]} 个站点"
+	
+	# 检测 curl 或 wget
+	local has_curl=0
+	local has_wget=0
+	command -v curl >/dev/null 2>&1 && has_curl=1
+	command -v wget >/dev/null 2>&1 && has_wget=1
+	
+	if [ $has_curl -eq 0 ] && [ $has_wget -eq 0 ]; then
+		error "测试代理需要 curl 或 wget 工具"
+		return 1
+	fi
+	
+	local test_tool="wget"
+	[ $has_curl -eq 1 ] && test_tool="curl"
+	echo "  测试工具: $test_tool"
+	echo ""
+	
+	# 测试每个 URL
+	local success_count=0
+	local fail_count=0
+	
+	for url in "${test_urls[@]}"; do
+		echo -n "  [$(date +%H:%M:%S)] 测试 $url ... "
+		
+		local exit_code=1
+		local start_time
+		start_time=$(date +%s)
+		
+		if [ $has_curl -eq 1 ]; then
+			# 使用 curl 测试
+			if [ "$proxy_type" = "socks5" ] || [ "$proxy_type" = "socks5h" ]; then
+				if curl -x "$proxy" -sS --connect-timeout "$timeout" --max-time "$((timeout * 2))" "$url" >/dev/null 2>&1; then
+					exit_code=0
+				fi
+			else
+				if curl --proxy "$proxy" -sS --connect-timeout "$timeout" --max-time "$((timeout * 2))" "$url" >/dev/null 2>&1; then
+					exit_code=0
+				fi
+			fi
+		else
+			# 使用 wget 测试
+			if wget -e "use_proxy=yes" -e "http_proxy=$proxy" -e "https_proxy=$proxy" \
+				--timeout="$timeout" --tries=1 -q --spider "$url" >/dev/null 2>&1; then
+				exit_code=0
+			fi
+		fi
+		
+		local end_time
+		end_time=$(date +%s)
+		local duration=$((end_time - start_time))
+		
+		if [ $exit_code -eq 0 ]; then
+			echo -e "\033[32m✓ 成功\033[0m (${duration}s)"
+			((success_count++))
+		else
+			echo -e "\033[31m✗ 失败\033[0m (${duration}s)"
+			((fail_count++))
+		fi
+	done
+	
+	echo ""
+	if [ $success_count -gt 0 ]; then
+		info "测试结果: \033[32m成功 $success_count\033[0m / 失败 $fail_count"
+		info "代理服务正常可用 ✓"
+		return 0
+	else
+		error "测试结果: 成功 0 / 失败 $fail_count"
+		error "代理连通性测试失败（所有测试 URL 均无法访问）"
+		tip "请检查："
+		tip "  1. 代理地址是否正确: $proxy"
+		tip "  2. 代理服务是否运行"
+		tip "  3. 代理端口是否开放"
+		tip "  4. 网络连接是否正常"
+		if [ $is_ip -eq 0 ]; then
+			tip "  5. DNS解析是否正确: $proxy_host → $resolved_ip"
+		fi
+		return 1
+	fi
+}
+
 # ============================================================
 # 核心函数
 # ============================================================
@@ -251,6 +400,7 @@ _px_help() {
 	echo "  px -D [<名称>]          设置/清除默认代理配置"
 	echo ""
 	echo -e "\033[1m其他\033[0m"
+	echo "  px -t [<名称>]          测试代理连通性（默认测试当前/默认代理）"
 	echo "  px -h, --help           显示此帮助信息"
 	echo ""
 	echo -e "\033[2m配置文件: ${PX_CONFIG_FILE}\033[0m"
@@ -318,6 +468,45 @@ if [ "$1" = "-D" ]; then
 		tip "  px -D <名称>   将指定代理设为默认"
 		_px_done 1
 	fi
+fi
+
+# -t：测试代理连通性
+if [ "$1" = "-t" ]; then
+	_px_test_proxy_url=""
+	_px_test_proxy_name=""
+	
+	if [ $# -eq 1 ]; then
+		# 无参数：测试当前/默认代理
+		if [ -n "${HTTP_PROXY:-}" ]; then
+			_px_test_proxy_url="$HTTP_PROXY"
+			_px_test_proxy_name="当前环境变量"
+		else
+			_px_test_proxy_url=$(_px_get_default_proxy)
+			_px_test_proxy_name="默认代理"
+		fi
+	elif [ $# -eq 2 ]; then
+		# 一个参数：可能是代理名称或代理地址
+		_px_arg="$2"
+		# 判断是代理地址还是名称
+		if [[ "$_px_arg" =~ ^(http|https|socks5|socks5h)://.+:[0-9]+$ ]]; then
+			# 是代理地址
+			_px_test_proxy_url="$_px_arg"
+			_px_test_proxy_name="自定义"
+		else
+			# 可能是代理名称
+			_px_test_proxy_url=$(_px_get_profile "$_px_arg") || _px_done 1
+			_px_test_proxy_name="$_px_arg"
+		fi
+	else
+		error "用法: px -t [<名称或地址>]"
+		tip "  px -t              测试当前/默认代理"
+		tip "  px -t <名称>        测试已保存的代理配置"
+		tip "  px -t <代理地址>    测试指定代理地址"
+		_px_done 1
+	fi
+	
+	_px_test_proxy "$_px_test_proxy_url" "$_px_test_proxy_name"
+	_px_done $?
 fi
 
 # ============================================================
