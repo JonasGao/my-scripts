@@ -846,7 +846,13 @@ do_config_edit() {
     
     local editor="${EDITOR:-vim}"
     log_info "Opening $config_file with $editor..."
-    $editor "$config_file"
+    
+    # Force UTF-8 encoding for vim
+    if [[ "$editor" =~ vim$ ]] || [[ "$editor" =~ vi$ ]]; then
+        $editor -c 'set encoding=utf-8' "$config_file"
+    else
+        $editor "$config_file"
+    fi
 }
 
 do_config_show() {
