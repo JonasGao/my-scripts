@@ -639,7 +639,7 @@ do_config_download() {
     
     local sources_file=$(get_sources_file)
     
-    if [ ! -f "$sources_file" ]; then
+if [ ! -f "$sources_file" ]; then
         log_error "No sources configured"
         echo "Add a source first: mihomoctl config add <name> <url>"
         return 1
