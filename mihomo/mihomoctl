@@ -7,7 +7,7 @@ MIRROR="${MIRROR:-https://mirror.ghproxy.com/}"
 get_config_dir() {
     local default_dir="/etc/mihomo"
     local config_file="${HOME}/.config/mihomo/config-dir.conf"
-    
+
     if [ -f "$config_file" ]; then
         local saved_dir=$(cat "$config_file" 2>/dev/null)
         if [ -n "$saved_dir" ] && [ -d "$saved_dir" ]; then
@@ -34,15 +34,15 @@ USER_AGENT="${USER_AGENT:-Clash/v1.18.0}"
 
 # Preset User-Agents
 declare -A UA_PRESETS=(
-    ["clash"]="Clash/v1.18.0"
-    ["clashmeta"]="ClashMeta/v1.15.0"
-    ["mihomo"]="mihomo/v1.19.0"
-    ["surge"]="Surge/4.1500"
-    ["quantumult"]="Quantumult/1.0.9"
-    ["shadowrocket"]="Shadowrocket/2.1.91"
-    ["mozilla"]="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    ["chrome"]="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
-    ["curl"]="curl/7.81.0"
+     ["clash"]="Clash/v1.18.0"
+     ["clashmeta"]="ClashMeta/v1.15.0"
+     ["mihomo"]="mihomo/v1.19.0"
+     ["surge"]="Surge/4.1500"
+     ["quantumult"]="Quantumult/1.0.9"
+     ["shadowrocket"]="Shadowrocket/2.1.91"
+     ["mozilla"]="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+     ["chrome"]="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"
+     ["curl"]="curl/7.81.0"
 )
 
 # XDG 数据目录（存储配置源）
@@ -57,11 +57,11 @@ get_sources_file() {
 
 log_info() { echo "[INFO] $1"; }
 log_error() { echo "[ERROR] $1" >&2; }
-log_debug() { [[ "$VERBOSE" = "1" ]] && echo "[DEBUG] $1"; }
+log_debug() { [[ $VERBOSE == "1"  ]] && echo "[DEBUG] $1"; }
 
 get_ua() {
     local ua_input="$1"
-    
+
     # If it's a preset name, expand it
     if [[ -v "UA_PRESETS[$ua_input]" ]]; then
         echo "${UA_PRESETS[$ua_input]}"
@@ -124,27 +124,30 @@ check_deps
 
 # 特定命令需要 root 权限
 case "${1:-}" in
-    install|uninstall|start|stop|restart|enable|disable|ui)
+    install | uninstall | start | stop | restart | enable | disable | ui)
         check_root "$@"
         ;;
     config)
         case "${2:-}" in
-            download|select|create|edit)
+            download | select | create | edit)
                 check_root "$@"
                 ;;
-            add|remove|list|show)
+            add | remove | list | show)
                 ;;
         esac
         ;;
-    status|logs|--help|-h)
+    status | logs | --help | -h)
         ;;
 esac
 
 ARCH=$(uname -m)
 case "$ARCH" in
     x86_64)     MIRROR_ARCH="linux-amd64" ;;
-    aarch64|arm64) MIRROR_ARCH="linux-arm64" ;;
-    *)          log_error "Unsupported architecture: $ARCH"; exit 1 ;;
+    aarch64 | arm64) MIRROR_ARCH="linux-arm64" ;;
+    *)
+                log_error "Unsupported architecture: $ARCH"
+                                                             exit 1
+                                                                    ;;
 esac
 
 get_cache_path() {
@@ -160,12 +163,12 @@ get_uncompressed_path() {
 
 ensure_allow_lan() {
     local config_file="$1"
-    
+
     if [ ! -f "$config_file" ]; then
         log_error "Config file not found: $config_file"
         return 1
     fi
-    
+
     # 检查是否已经有 allow-lan 配置
     if grep -q "^allow-lan:" "$config_file" 2>/dev/null; then
         # 更新现有的 allow-lan 为 true
@@ -183,7 +186,7 @@ curl_progress() {
     local output="$2"
     local force_download="${3:-0}"
     mkdir -p "$CACHE_DIR"
-    
+
     local cached_file=$(get_cache_path "$url")
     local uncached_file=$(get_uncompressed_path "$cached_file")
 
@@ -218,13 +221,12 @@ curl_progress() {
     fi
 }
 
-
 cache_uncompressed() {
     local gz_file="$1"
     local bin_file=$(get_uncompressed_path "$gz_file")
 
     if [ ! -f "$bin_file" ]; then
-        gunzip -c "$gz_file" > "$bin_file"
+        gunzip -c "$gz_file" >"$bin_file"
         chmod +x "$bin_file"
         log_info "Cached binary: $bin_file"
     fi
@@ -233,11 +235,11 @@ cache_uncompressed() {
 do_install() {
     local force_download=0
     local config_dir="/etc/mihomo"
-    
+
     # 解析参数
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -f|--force)
+            -f | --force)
                 force_download=1
                 log_info "Force download enabled"
                 shift
@@ -255,15 +257,15 @@ do_install() {
                 ;;
         esac
     done
-    
+
     log_info "Starting mihomo user-level installation..."
     log_info "Version: $VERSION, Arch: $MIRROR_ARCH"
     log_info "Config directory: $config_dir"
-    
+
     # Save config directory preference for other commands
     if [ "$config_dir" != "/etc/mihomo" ]; then
         mkdir -p "${HOME}/.config/mihomo"
-        echo "$config_dir" > "${HOME}/.config/mihomo/config-dir.conf"
+        echo "$config_dir" >"${HOME}/.config/mihomo/config-dir.conf"
         log_info "Saved config directory preference: $config_dir"
     fi
 
@@ -286,10 +288,10 @@ do_install() {
     log_info "Processing binary..."
     local binary_file="$tmpfile"
     local file_type=$(file "$tmpfile" 2>/dev/null || echo "unknown")
-    
+
     if echo "$file_type" | grep -q "gzip"; then
         log_debug "File is gzip format, decompressing..."
-        gunzip -c "$tmpfile" > "${tmpfile}.uncompressed" 2>/dev/null || {
+        gunzip -c "$tmpfile" >"${tmpfile}.uncompressed"  2>/dev/null || {
             log_error "Decompress failed"
             exit 1
         }
@@ -305,7 +307,7 @@ do_install() {
     else
         log_debug "File is already in binary format (from cache)"
     fi
-    
+
     if [ ! -f "$binary_file" ]; then
         log_error "Binary file not found: $binary_file"
         exit 1
@@ -327,7 +329,7 @@ do_install() {
     log_info "Creating config directory ${config_dir}..."
 
     if [ ! -f "${config_dir}/config.yaml" ]; then
-        cat > "${config_dir}/config.yaml" << 'EOF'
+        cat >"${config_dir}/config.yaml"  <<'EOF'
 mixed-port: 7890
 allow-lan: true
 mode: rule
@@ -339,7 +341,7 @@ EOF
 
     mkdir -p "$SYSTEMD_DIR"
     log_info "Installing systemd system service..."
-    cat > "${SYSTEMD_DIR}/mihomo.service" << EOF
+    cat >"${SYSTEMD_DIR}/mihomo.service"  <<EOF
 [Unit]
 Description=mihomo proxy service
 After=network-online.target
@@ -359,7 +361,7 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload 2>/dev/null || true
-    
+
     log_info "Installation complete!"
     echo ""
     echo "Start mihomo:"
@@ -368,7 +370,7 @@ EOF
 
 do_config() {
     local subcommand="${1:-}"
-    
+
     if [ -z "$subcommand" ]; then
         log_info "Available commands:"
         echo "  mihomoctl config add <name> <url>          - Add profile source"
@@ -384,7 +386,7 @@ do_config() {
         echo "Use --list-ua to see all presets"
         return 0
     fi
-    
+
     case "$subcommand" in
         add)
             do_config_add "$2" "$3"
@@ -420,7 +422,7 @@ do_config() {
 do_config_add() {
     local name="${1:-}"
     local source="${2:-}"
-    
+
     if [ -z "$name" ] || [ -z "$source" ]; then
         log_error "Missing arguments"
         echo "Usage: mihomoctl config add <name> <url>"
@@ -431,20 +433,20 @@ do_config_add() {
         echo "  sudo mihomoctl config add myconfig ./my-mihomo-config.yaml"
         return 1
     fi
-    
+
     # If the source is an existing file, add it as a manual config
     if [ -f "$source" ]; then
         check_root "config add $name $source"
-        
+
         mkdir -p "$MANUAL_CONFIG_DIR"
         local config_file="${MANUAL_CONFIG_DIR}/${name}.yaml"
-        
+
         if [ -f "$config_file" ]; then
             log_error "Config '$name' already exists at $config_file"
             echo "Use 'sudo mihomoctl config remove $name' to remove it first"
             return 1
         fi
-        
+
         cp "$source" "$config_file"
         log_info "Added manual config: $name ($(du -h "$config_file" | cut -d' ' -f1))"
         echo ""
@@ -452,18 +454,18 @@ do_config_add() {
         echo "Apply it:  sudo mihomoctl config select $name"
         return 0
     fi
-    
+
     # Otherwise, treat it as a URL source
     local sources_file=$(get_sources_file)
     mkdir -p "$(dirname "$sources_file")"
-    
+
     if [ -f "$sources_file" ] && grep -q "^${name}|" "$sources_file"; then
         log_error "Source '$name' already exists"
         echo "Use 'mihomoctl config remove $name' to remove it first"
         return 1
     fi
-    
-    echo "${name}|${source}" >> "$sources_file"
+
+    echo "${name}|${source}" >>"$sources_file"
     log_info "Added source: $name"
     log_debug "URL: $source"
     echo ""
@@ -475,7 +477,7 @@ do_config_add() {
 
 do_config_remove() {
     local name="${1:-}"
-    
+
     if [ -z "$name" ]; then
         log_error "Source or config name required"
         echo "Usage: mihomoctl config remove <name>"
@@ -483,9 +485,9 @@ do_config_remove() {
         echo "Removes a source, manual config, or downloaded profile by name."
         return 1
     fi
-    
+
     local found=0
-    
+
     # 1. Check profile sources
     local sources_file=$(get_sources_file)
     if [ -f "$sources_file" ] && grep -q "^${name}|" "$sources_file"; then
@@ -493,14 +495,14 @@ do_config_remove() {
         log_info "Removed source: $name"
         found=1
     fi
-    
+
     # 2. Check manual configs
     if [ -f "${MANUAL_CONFIG_DIR}/${name}.yaml" ]; then
         rm -f "${MANUAL_CONFIG_DIR}/${name}.yaml"
         log_info "Removed manual config: ${name}.yaml"
         found=1
     fi
-    
+
     # 3. Check downloaded profiles (glob match)
     if [ -d "$CONFIG_REPO_DIR" ]; then
         for f in "$CONFIG_REPO_DIR"/*"${name}"*; do
@@ -510,7 +512,7 @@ do_config_remove() {
             found=1
         done
     fi
-    
+
     if [ "$found" -eq 0 ]; then
         log_error "No source, manual config, or profile found matching '$name'"
         return 1
@@ -519,38 +521,38 @@ do_config_remove() {
 
 do_config_list() {
     local sources_file=$(get_sources_file)
-    
+
     echo ""
     echo "=== Profile Sources ==="
     echo ""
-    
+
     if [ -f "$sources_file" ] && [ -s "$sources_file" ]; then
         echo "Configured sources:"
         while IFS='|' read -r name url; do
             echo "  $name"
             echo "    URL: $url"
-        done < "$sources_file"
+        done <"$sources_file"
     else
         echo "No sources configured"
         echo ""
         echo "Add a source:"
         echo "  mihomoctl config add <name> <url>"
     fi
-    
+
     echo ""
     echo "=== Downloaded Profiles ==="
     echo ""
-    
+
     if [ -d "$CONFIG_REPO_DIR" ] && [ -n "$(ls -A "$CONFIG_REPO_DIR" 2>/dev/null)" ]; then
         ls -lh "$CONFIG_REPO_DIR" | tail -n +2 | awk '{printf "  %s (%s)\n", $9, $5}'
     else
         echo "  (no profiles downloaded)"
     fi
-    
+
     echo ""
     echo "=== Manual Configs ==="
     echo ""
-    
+
     if [ -d "$MANUAL_CONFIG_DIR" ] && [ -n "$(ls -A "$MANUAL_CONFIG_DIR" 2>/dev/null)" ]; then
         ls -lh "$MANUAL_CONFIG_DIR" | tail -n +2 | awk '{printf "  %s (%s)\n", $9, $5}'
     else
@@ -559,14 +561,14 @@ do_config_list() {
         echo "Create a manual config:"
         echo "  mihomoctl config create <name>"
     fi
-    
+
     echo ""
     echo "=== Current Active Config ==="
     echo ""
-    
+
     local source_file="${CONFIG_DIR}/.source"
     local config_file="${CONFIG_DIR}/config.yaml"
-    
+
     if [ -f "$source_file" ]; then
         source "$source_file"
         echo "  Using: $source_name ($source_type)"
@@ -575,7 +577,7 @@ do_config_list() {
     elif [ -f "$config_file" ]; then
         local header_source=$(grep "^# Applied from:" "$config_file" 2>/dev/null | head -1)
         local header_path=$(grep "^# Source path:" "$config_file" 2>/dev/null | head -1)
-        
+
         if [ -n "$header_source" ]; then
             echo "  $(echo "$header_source" | sed 's/^# //')"
             if [ -n "$header_path" ]; then
@@ -587,7 +589,7 @@ do_config_list() {
     else
         echo "  (no config applied)"
     fi
-    
+
     echo ""
     echo "Sources file: $sources_file"
 }
@@ -595,11 +597,11 @@ do_config_list() {
 do_config_download() {
     local source_name=""
     local custom_ua="${USER_AGENT}"
-    
+
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --ua|--user-agent)
+            --ua | --user-agent)
                 if [ -z "$2" ]; then
                     log_error "--ua requires a User-Agent (preset name or custom string)"
                     list_ua_presets
@@ -623,7 +625,7 @@ do_config_download() {
                 ;;
         esac
     done
-    
+
     if [ -z "$source_name" ]; then
         log_error "Source name required"
         echo "Usage: mihomoctl config download <source_name> [--ua <preset|custom>] [--list-ua]"
@@ -636,15 +638,15 @@ do_config_download() {
         list_ua_presets
         return 1
     fi
-    
+
     local sources_file=$(get_sources_file)
-    
-if [ ! -f "$sources_file" ]; then
+
+    if [ ! -f "$sources_file" ]; then
         log_error "No sources configured"
         echo "Add a source first: mihomoctl config add <name> <url>"
         return 1
     fi
-    
+
     local source_line=$(grep "^${source_name}|" "$sources_file")
     if [ -z "$source_line" ]; then
         log_error "Source '$source_name' not found"
@@ -652,13 +654,13 @@ if [ ! -f "$sources_file" ]; then
         cut -d'|' -f1 "$sources_file" | sed 's/^/  /'
         return 1
     fi
-    
+
     local url=$(echo "$source_line" | cut -d'|' -f2)
-    
+
     mkdir -p "$CONFIG_REPO_DIR"
-    
+
     local output_file="${CONFIG_REPO_DIR}/${source_name}-$(date +%Y%m%d-%H%M%S).yaml"
-    
+
     echo ""
     echo "=== Download Target ==="
     echo "  Source:  $source_name"
@@ -666,28 +668,28 @@ if [ ! -f "$sources_file" ]; then
     echo "  Save to: $output_file"
     echo "  UA:      $custom_ua"
     echo ""
-    
+
     local tmpfile="${output_file}.tmp"
     local http_code
-    
+
     log_info "Downloading..."
-    
+
     http_code=$(curl -w "%{http_code}" -k -L -A "$custom_ua" --connect-timeout 30 -m 60 -o "$tmpfile" "$url" 2>&1 | tail -n1)
-    
+
     if [ -z "$http_code" ]; then
         http_code="000"
     fi
-    
+
     log_debug "HTTP Code: $http_code"
-    
+
     if [ "$http_code" != "200" ]; then
         log_error "Failed to download profile (HTTP $http_code)"
-        
+
         if [ -f "$tmpfile" ] && [ -s "$tmpfile" ]; then
-            local body_size=$(wc -c < "$tmpfile" 2>/dev/null || echo 0)
+            local body_size=$(wc -c <"$tmpfile"  2>/dev/null || echo 0)
             echo ""
             echo "=== Response Body (first 500 bytes) ==="
-            
+
             if [ "$body_size" -gt 500 ]; then
                 head -c 500 "$tmpfile" 2>/dev/null
                 echo ""
@@ -696,7 +698,7 @@ if [ ! -f "$sources_file" ]; then
                 cat "$tmpfile" 2>/dev/null
             fi
             echo ""
-            
+
             if head -c 10 "$tmpfile" 2>/dev/null | grep -q "{"; then
                 if command -v jq >/dev/null 2>&1; then
                     echo "Parsed JSON:"
@@ -705,7 +707,7 @@ if [ ! -f "$sources_file" ]; then
                 fi
             fi
         fi
-        
+
         if [ "$http_code" = "404" ]; then
             log_error "Profile not found (404)"
         elif [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
@@ -715,17 +717,17 @@ if [ ! -f "$sources_file" ]; then
         else
             log_error "Server error. Response code: $http_code"
         fi
-        
+
         rm -f "$tmpfile"
         return 1
     fi
-    
+
     if [ ! -f "$tmpfile" ] || [ ! -s "$tmpfile" ]; then
         log_error "Downloaded file is empty"
         rm -f "$tmpfile"
         return 1
     fi
-    
+
     if ! head -c 100 "$tmpfile" | grep -qE "^(port|mixed-port|#|proxies)"; then
         log_error "Downloaded file appears to be invalid or incomplete"
         echo ""
@@ -736,7 +738,7 @@ if [ ! -f "$sources_file" ]; then
         rm -f "$tmpfile"
         return 1
     fi
-    
+
     mv "$tmpfile" "$output_file"
     local size=$(du -h "$output_file" | cut -d' ' -f1)
     log_info "Profile saved: $output_file ($size)"
@@ -749,7 +751,7 @@ do_config_select_interactive() {
     local configs=()
     local types=()
     local files=()
-    
+
     # Collect manual configs
     if [ -d "$MANUAL_CONFIG_DIR" ] && [ -n "$(ls -A "$MANUAL_CONFIG_DIR" 2>/dev/null)" ]; then
         for f in "$MANUAL_CONFIG_DIR"/*.yaml; do
@@ -759,7 +761,7 @@ do_config_select_interactive() {
             files+=("$f")
         done
     fi
-    
+
     # Collect downloaded profiles
     if [ -d "$CONFIG_REPO_DIR" ] && [ -n "$(ls -A "$CONFIG_REPO_DIR" 2>/dev/null)" ]; then
         for f in "$CONFIG_REPO_DIR"/*.yaml; do
@@ -769,7 +771,7 @@ do_config_select_interactive() {
             files+=("$f")
         done
     fi
-    
+
     if [ ${#configs[@]} -eq 0 ]; then
         log_error "No configs available"
         echo "Download or create a config first:"
@@ -777,37 +779,37 @@ do_config_select_interactive() {
         echo "  mihomoctl config create <name>"
         return 1
     fi
-    
+
     # Display detailed menu
     echo ""
     echo "Available configs:"
     echo ""
-    
+
     local i=1
     for config in "${configs[@]}"; do
-        local file="${files[$i-1]}"
+        local file="${files[i - 1]}"
         local size=$(du -h "$file" | cut -d' ' -f1)
         local timestamp=$(stat -c %y "$file" 2>/dev/null | cut -d' ' -f1)
-        
+
         printf "%2d) [%-7s] %s (%s, %s)\n" \
-            "$i" "${types[$i-1]}" "$config" "$size" "$timestamp"
-        i=$((i+1))
+            "$i" "${types[i - 1]}" "$config" "$size" "$timestamp"
+        i=$((i + 1))
     done
-    
+
     echo ""
     echo "Or enter file path directly"
     echo ""
-    
+
     # Read user selection
     local selection
     read -p "Select config [1-${#configs[@]}] or path: " -r selection
-    
+
     # Check if numeric selection
-    if [[ "$selection" =~ ^[0-9]+$ ]] && \
-       [ "$selection" -ge 1 ] && \
-       [ "$selection" -le ${#configs[@]} ]; then
-        local selected_file="${files[$selection-1]}"
-        log_info "Selected: ${configs[$selection-1]}"
+    if [[ $selection =~ ^[0-9]+$   ]] &&
+        [ "$selection" -ge 1 ] &&
+        [ "$selection" -le ${#configs[@]} ]; then
+        local selected_file="${files[selection - 1]}"
+        log_info "Selected: ${configs[selection - 1]}"
         apply_config "$selected_file"
     elif [ -f "$selection" ]; then
         # User entered file path
@@ -823,27 +825,27 @@ apply_config() {
     local profile_path="$1"
     local source_name=$(basename "$profile_path")
     local source_type=""
-    
-    if [[ "$profile_path" == "${MANUAL_CONFIG_DIR}/"* ]]; then
+
+    if [[ $profile_path == "${MANUAL_CONFIG_DIR}/"*   ]]; then
         source_type="manual"
-    elif [[ "$profile_path" == "${CONFIG_REPO_DIR}/"* ]]; then
+    elif [[ $profile_path == "${CONFIG_REPO_DIR}/"*   ]]; then
         source_type="profile"
     else
         source_type="external"
     fi
-    
+
     log_info "Applying profile: $source_name ($source_type)"
-    
+
     if [ -f "${CONFIG_DIR}/config.yaml" ]; then
         cp "${CONFIG_DIR}/config.yaml" "${CONFIG_DIR}/config.yaml.bak"
         log_debug "Backed up previous config: ${CONFIG_DIR}/config.yaml.bak"
     fi
-    
+
     cp "$profile_path" "${CONFIG_DIR}/config.yaml"
     log_info "Applied config: $source_name"
-    
-    if ! grep -q "^port:" "${CONFIG_DIR}/config.yaml" 2>/dev/null && \
-       ! grep -q "^mixed-port:" "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
+
+    if ! grep -q "^port:" "${CONFIG_DIR}/config.yaml" 2>/dev/null &&
+        ! grep -q "^mixed-port:" "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
         log_error "Configuration format invalid (missing port settings)"
         log_info "Restoring previous config..."
         if [ -f "${CONFIG_DIR}/config.yaml.bak" ]; then
@@ -851,30 +853,30 @@ apply_config() {
         fi
         return 1
     fi
-    
+
     ensure_allow_lan "${CONFIG_DIR}/config.yaml"
-    
+
     local header_comment="# Applied from: $source_name ($source_type)
 # Source path: $profile_path
 # Applied at: $(date +%Y-%m-%d_%H:%M:%S)
 # Managed by mihomoctl
 
 "
-    
+
     local tmp_config=$(mktemp)
-    echo "$header_comment" > "$tmp_config"
-    cat "${CONFIG_DIR}/config.yaml" >> "$tmp_config"
+    echo "$header_comment" >"$tmp_config"
+    cat "${CONFIG_DIR}/config.yaml" >>"$tmp_config"
     mv "$tmp_config" "${CONFIG_DIR}/config.yaml"
-    
-    cat > "${CONFIG_DIR}/.source" << EOF
+
+    cat >"${CONFIG_DIR}/.source"  <<EOF
 source_path=$profile_path
 source_name=$source_name
 source_type=$source_type
 applied_at=$(date +%Y-%m-%d_%H:%M:%S)
 EOF
-    
+
     log_info "Config applied successfully (source tracked in header and .source)"
-    
+
     if systemctl is-active --quiet mihomo 2>/dev/null; then
         log_info "Restarting mihomo service..."
         systemctl restart mihomo
@@ -893,14 +895,14 @@ EOF
 
 do_config_select() {
     local target="${1:-}"
-    
+
     if [ -z "$target" ]; then
         do_config_select_interactive
         return 0
     fi
-    
+
     local profile_path=""
-    
+
     # If argument is an existing file, use it directly
     if [ -f "$target" ]; then
         profile_path="$target"
@@ -918,7 +920,7 @@ do_config_select() {
             done
         fi
     fi
-    
+
     if [ -z "$profile_path" ] || [ ! -f "$profile_path" ]; then
         log_error "Config not found: $target"
         echo ""
@@ -926,13 +928,13 @@ do_config_select() {
         do_config_list_configs
         return 1
     fi
-    
+
     apply_config "$profile_path"
 }
 
 do_config_create() {
     local name="${1:-}"
-    
+
     if [ -z "$name" ]; then
         log_error "Config name required"
         echo "Usage: mihomoctl config create <name>"
@@ -941,23 +943,23 @@ do_config_create() {
         echo "Edit it afterward with: sudo mihomoctl config edit $name"
         return 1
     fi
-    
+
     # Validate name (alphanumeric, hyphens, underscores only)
     if ! echo "$name" | grep -qE '^[a-zA-Z0-9_-]+$'; then
         log_error "Invalid config name. Use only letters, numbers, hyphens, and underscores."
         return 1
     fi
-    
+
     mkdir -p "$MANUAL_CONFIG_DIR"
     local config_file="${MANUAL_CONFIG_DIR}/${name}.yaml"
-    
+
     if [ -f "$config_file" ]; then
         log_error "Config '$name' already exists at $config_file"
         echo "Edit it: sudo mihomoctl config edit $name"
         return 1
     fi
-    
-    cat > "$config_file" << 'MANUAL_EOF'
+
+    cat >"$config_file"  <<'MANUAL_EOF'
 # mihomo manual configuration
 mixed-port: 7890
 allow-lan: true
@@ -979,7 +981,7 @@ proxy-groups:
 rules:
   - MATCH,Proxy
 MANUAL_EOF
-    
+
     log_info "Created manual config: $config_file"
     echo ""
     echo "Edit this file:"
@@ -991,23 +993,23 @@ MANUAL_EOF
 
 do_config_edit() {
     local name="${1:-}"
-    
+
     if [ -z "$name" ]; then
         log_error "Config name required"
         echo "Usage: mihomoctl config edit <name>"
         echo ""
-        echo "Opens the config file in your default editor (\$EDITOR, defaults to vim)."
+        echo 'Opens the config file in your default editor ($EDITOR, defaults to vim).'
         echo ""
         echo "Available:"
         do_config_list_configs
         return 1
     fi
-    
+
     local config_file=""
-    
+
     # Strip .yaml extension if provided, then search
     local base_name="${name%.yaml}"
-    
+
     if [ -f "${MANUAL_CONFIG_DIR}/${base_name}.yaml" ]; then
         config_file="${MANUAL_CONFIG_DIR}/${base_name}.yaml"
     elif [ -f "${MANUAL_CONFIG_DIR}/${name}" ]; then
@@ -1023,12 +1025,12 @@ do_config_edit() {
         do_config_list_configs
         return 1
     fi
-    
+
     local editor="${EDITOR:-vim}"
     log_info "Opening $config_file with $editor..."
-    
+
     # Force UTF-8 encoding for vim
-    if [[ "$editor" =~ vim$ ]] || [[ "$editor" =~ vi$ ]]; then
+    if [[ $editor =~ vim$   ]] || [[ $editor =~ vi$   ]]; then
         $editor -c 'set encoding=utf-8' "$config_file"
     else
         $editor "$config_file"
@@ -1038,29 +1040,29 @@ do_config_edit() {
 do_config_show() {
     local current="${CONFIG_DIR}/config.yaml"
     local source_file="${CONFIG_DIR}/.source"
-    
+
     echo ""
     echo "=== Current Active Config ==="
     echo ""
-    
+
     if [ ! -f "$current" ]; then
         echo "  No config file found at $current"
         return 0
     fi
-    
+
     local size=$(du -h "$current" | cut -d' ' -f1)
     echo "  Path: $current"
     echo "  Size: $size"
     echo ""
-    
+
     echo "=== Source Tracking ==="
     echo ""
-    
+
     local tracked_source=""
     local tracked_type=""
     local tracked_time=""
     local tracked_path=""
-    
+
     if [ -f "$source_file" ]; then
         source "$source_file"
         tracked_source="$source_name"
@@ -1074,11 +1076,11 @@ do_config_show() {
         echo "    Path: $source_path"
         echo ""
     fi
-    
+
     local header_source=$(grep "^# Applied from:" "$current" 2>/dev/null | head -1 | sed 's/^# //')
     local header_path=$(grep "^# Source path:" "$current" 2>/dev/null | head -1 | sed 's/^# Source path: //')
     local header_time=$(grep "^# Applied at:" "$current" 2>/dev/null | head -1 | sed 's/^# Applied at: //')
-    
+
     if [ -n "$header_source" ]; then
         echo "  Config header comment:"
         echo "    $header_source"
@@ -1090,10 +1092,10 @@ do_config_show() {
         fi
         echo ""
     fi
-    
+
     echo "=== Summary ==="
     echo ""
-    
+
     if [ -n "$tracked_source" ] && [ -n "$header_source" ]; then
         if [ "$tracked_path" = "$header_path" ]; then
             echo "  ✓ Source tracking consistent"
@@ -1112,11 +1114,11 @@ do_config_show() {
         echo "  ⚠ No source tracking found"
         echo "  (config may have been created before tracking feature or edited manually)"
     fi
-    
+
     echo ""
     echo "Key settings:"
     grep -E "^(port|mixed-port|socks-port|external-controller|mode|log-level):" "$current" | sed 's/^/  /'
-    
+
     echo ""
     echo "Actions:"
     echo "  List configs:  mihomoctl config list"
@@ -1128,7 +1130,7 @@ do_config_list_configs() {
     echo "Manual configs:"
     local manuals=$(get_manual_configs)
     [ -n "$manuals" ] && echo "$manuals" | sed 's/^/  /' || echo "  (none — create one: mihomoctl config create <name>)"
-    
+
     echo ""
     echo "Downloaded profiles:"
     local profiles=$(get_profile_configs)
@@ -1140,7 +1142,7 @@ do_start() {
         log_error "Mihomo not installed. Run: mihomoctl install"
         return 1
     fi
-    
+
     log_info "Starting mihomo service..."
     if systemctl start mihomo 2>/dev/null; then
         sleep 1
@@ -1192,35 +1194,35 @@ do_status() {
         log_error "Mihomo not installed"
         return 1
     fi
-    
+
     echo ""
     echo "=== Mihomo Service Status ==="
     echo ""
-    
+
     if systemctl is-active --quiet mihomo 2>/dev/null; then
         echo "Status: ✓ Running"
     else
         echo "Status: ✗ Stopped"
     fi
-    
+
     if systemctl is-enabled --quiet mihomo 2>/dev/null; then
         echo "Auto-start: ✓ Enabled"
     else
         echo "Auto-start: ✗ Disabled"
     fi
-    
+
     echo ""
     echo "Configuration:"
     echo "  Binary: ${INSTALL_DIR}/mihomo"
     echo "  Config: ${CONFIG_DIR}/config.yaml"
     echo "  Cache: ${CACHE_DIR}"
-    
+
     if [ -f "${CONFIG_DIR}/config.yaml" ]; then
         echo ""
         echo "Current config ports:"
         grep -E "^(port|mixed-port|socks-port|http-port):" "${CONFIG_DIR}/config.yaml" | sed 's/^/  /'
     fi
-    
+
     echo ""
     echo "Service details:"
     systemctl --no-pager status mihomo 2>/dev/null
@@ -1229,12 +1231,12 @@ do_status() {
 do_logs() {
     local lines="${1:-100}"
     local follow="${2:-}"
-    
+
     if ! [ -f "${INSTALL_DIR}/mihomo" ]; then
         log_error "Mihomo not installed"
         return 1
     fi
-    
+
     if [ "$follow" = "-f" ] || [ "$follow" = "--follow" ]; then
         log_info "Following mihomo service logs (press Ctrl+C to stop)..."
         journalctl -u mihomo -f
@@ -1249,7 +1251,7 @@ do_enable() {
         log_error "Mihomo not installed. Run: mihomoctl install"
         return 1
     fi
-    
+
     log_info "Enabling auto-start for mihomo service..."
     if systemctl enable mihomo 2>/dev/null; then
         log_info "Auto-start enabled"
@@ -1294,7 +1296,7 @@ do_uninstall() {
 
 do_ui() {
     local subcommand="${1:-}"
-    
+
     if [ -z "$subcommand" ]; then
         log_info "Available UI commands:"
         echo "  mihomoctl ui install     Install zashboard UI"
@@ -1303,7 +1305,7 @@ do_ui() {
         echo "  mihomoctl ui uninstall   Remove UI"
         return 0
     fi
-    
+
     case "$subcommand" in
         install)
             do_ui_install
@@ -1329,16 +1331,16 @@ do_ui_install() {
         log_error "Mihomo not installed. Run: mihomoctl install"
         return 1
     fi
-    
+
     log_info "Installing zashboard UI..."
     mkdir -p "$UI_DIR"
-    
+
     local tmpdir=$(mktemp -d)
     trap "rm -rf '$tmpdir'" EXIT
-    
+
     log_info "Downloading zashboard..."
     local tmpfile="$tmpdir/dist.zip"
-    
+
     # 尝试下载
     if ! curl -k -L -# -A "$USER_AGENT" --connect-timeout 30 -m 120 -o "$tmpfile" "$UI_REPO" 2>/dev/null; then
         log_error "Failed to download zashboard from primary URL, trying alternative..."
@@ -1348,10 +1350,10 @@ do_ui_install() {
             return 1
         fi
     fi
-    
+
     log_info "Extracting UI files..."
     cd "$tmpdir"
-    
+
     # 检查 unzip 是否可用
     if command -v unzip >/dev/null 2>&1; then
         if ! unzip -q "$tmpfile" 2>/dev/null; then
@@ -1368,7 +1370,7 @@ do_ui_install() {
         log_error "unzip or python3 is required"
         return 1
     fi
-    
+
     # 查找 dist 目录
     local dist_dir
     if [ -d "$tmpdir/dist" ]; then
@@ -1381,28 +1383,28 @@ do_ui_install() {
             return 1
         fi
     fi
-    
+
     log_debug "Found dist at: $dist_dir"
-    
+
     # 清除旧的 UI 文件
     rm -rf "$UI_DIR"/*
-    
+
     # 复制文件
     if ! cp -r "$dist_dir"/* "$UI_DIR/" 2>/dev/null; then
         log_error "Failed to install UI files"
         return 1
     fi
-    
+
     trap - EXIT
-    
+
     # 更新配置文件
     if [ -f "${CONFIG_DIR}/config.yaml" ]; then
         if ! grep -q "external-ui:" "${CONFIG_DIR}/config.yaml"; then
-            echo "external-ui: $UI_DIR" >> "${CONFIG_DIR}/config.yaml"
+            echo "external-ui: $UI_DIR" >>"${CONFIG_DIR}/config.yaml"
             log_info "Updated config.yaml"
         fi
     fi
-    
+
     local size=$(du -sh "$UI_DIR" | cut -d' ' -f1)
     log_info "UI installed successfully: $size"
     echo ""
@@ -1418,7 +1420,7 @@ do_ui_update() {
         log_error "UI not installed. Run: mihomoctl ui install"
         return 1
     fi
-    
+
     log_info "Updating zashboard UI..."
     do_ui_install
 }
@@ -1428,11 +1430,11 @@ do_ui_status() {
         echo "UI Status: ✗ Not installed"
         return 0
     fi
-    
+
     echo "UI Status: ✓ Installed"
     echo "UI Path: $UI_DIR"
     echo "UI Size: $(du -sh "$UI_DIR" | cut -d' ' -f1)"
-    
+
     if [ -f "${CONFIG_DIR}/config.yaml" ]; then
         if grep -q "external-ui:" "${CONFIG_DIR}/config.yaml"; then
             echo "Config: ✓ Configured in config.yaml"
@@ -1449,19 +1451,19 @@ do_ui_uninstall() {
         log_info "UI not installed"
         return 0
     fi
-    
+
     log_info "Removing zashboard UI..."
     rm -rf "$UI_DIR"
-    
+
     if [ -f "${CONFIG_DIR}/config.yaml" ]; then
         sed -i '/^external-ui:/d' "${CONFIG_DIR}/config.yaml"
     fi
-    
+
     log_info "UI uninstalled successfully"
 }
 
 show_help() {
-    cat << 'HELP'
+    cat <<'HELP'
 Usage: sudo mihomoctl <command> [options]
 
 Installation & Uninstallation:
@@ -1597,10 +1599,10 @@ case "${1:-}" in
     --list-ua)
         list_ua_presets
         ;;
-    -h|--help)
+    -h | --help)
         show_help
         ;;
-    -v|--verbose)
+    -v | --verbose)
         VERBOSE=1
         shift
         "$0" "$@"
