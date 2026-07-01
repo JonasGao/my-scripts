@@ -83,6 +83,26 @@ list_ua_presets() {
     echo "  mihomoctl config download mysub --ua 'Custom-UA'"
 }
 
+get_manual_configs() {
+    [ -d "$MANUAL_CONFIG_DIR" ] && ls "$MANUAL_CONFIG_DIR"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//'
+}
+
+get_profile_configs() {
+    [ -d "$CONFIG_REPO_DIR" ] && ls "$CONFIG_REPO_DIR"/*.yaml 2>/dev/null | xargs -n1 basename
+}
+
+get_all_configs() {
+    local configs=""
+    configs=$(get_manual_configs)
+    configs="$configs $(get_profile_configs)"
+    echo "$configs"
+}
+
+get_sources() {
+    local sources_file=$(get_sources_file)
+    [ -f "$sources_file" ] && cut -d'|' -f1 "$sources_file"
+}
+
 check_root() {
     if [ "$EUID" -ne 0 ]; then
         log_error "This script must be run as root. Use: sudo mihomoctl $*"
@@ -1106,19 +1126,13 @@ do_config_show() {
 
 do_config_list_configs() {
     echo "Manual configs:"
-    if [ -d "$MANUAL_CONFIG_DIR" ] && [ -n "$(ls -A "$MANUAL_CONFIG_DIR" 2>/dev/null)" ]; then
-        ls -1 "$MANUAL_CONFIG_DIR" | sed 's/^/  /'
-    else
-        echo "  (none — create one: mihomoctl config create <name>)"
-    fi
+    local manuals=$(get_manual_configs)
+    [ -n "$manuals" ] && echo "$manuals" | sed 's/^/  /' || echo "  (none — create one: mihomoctl config create <name>)"
     
     echo ""
     echo "Downloaded profiles:"
-    if [ -d "$CONFIG_REPO_DIR" ] && [ -n "$(ls -A "$CONFIG_REPO_DIR" 2>/dev/null)" ]; then
-        ls -1 "$CONFIG_REPO_DIR" | sed 's/^/  /'
-    else
-        echo "  (none — download one: sudo mihomoctl config download <source>)"
-    fi
+    local profiles=$(get_profile_configs)
+    [ -n "$profiles" ] && echo "$profiles" | sed 's/^/  /' || echo "  (none — download one: sudo mihomoctl config download <source>)"
 }
 
 do_start() {
@@ -1439,422 +1453,11 @@ do_ui_uninstall() {
     log_info "Removing zashboard UI..."
     rm -rf "$UI_DIR"
     
-    # 移除配置
     if [ -f "${CONFIG_DIR}/config.yaml" ]; then
         sed -i '/^external-ui:/d' "${CONFIG_DIR}/config.yaml"
     fi
     
     log_info "UI uninstalled successfully"
-}
-
-# Bash completion function
-_mihomoctl_completion() {
-    local cur prev words cword
-    _init_completion || return
-    
-    local commands="install uninstall start stop restart status logs enable disable config ui"
-    local config_subcmds="add remove list download select create edit show"
-    local ui_subcmds="install update status uninstall"
-    
-    # UA preset names for completion
-    local ua_presets="clash clashmeta mihomo surge quantumult shadowrocket mozilla chrome curl"
-    
-    case "$prev" in
-        mihomoctl)
-            COMPREPLY=($(compgen -W "$commands -h --help -v --verbose --list-ua" -- "$cur"))
-            return
-            ;;
-        config)
-            COMPREPLY=($(compgen -W "$config_subcmds" -- "$cur"))
-            return
-            ;;
-        ui)
-            COMPREPLY=($(compgen -W "$ui_subcmds" -- "$cur"))
-            return
-            ;;
-        --ua|--user-agent)
-            COMPREPLY=($(compgen -W "$ua_presets" -- "$cur"))
-            return
-            ;;
-        download)
-            # Complete with source names from sources file
-            local sources_file=$(get_sources_file)
-            if [ -f "$sources_file" ]; then
-                local sources=$(cut -d'|' -f1 "$sources_file" 2>/dev/null)
-                COMPREPLY=($(compgen -W "$sources --ua --user-agent --list-ua" -- "$cur"))
-            fi
-            return
-            ;;
-        select)
-            # Complete with available configs
-            local configs=""
-            if [ -d "$MANUAL_CONFIG_DIR" ]; then
-                configs=$(ls "$MANUAL_CONFIG_DIR"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//')
-            fi
-            if [ -d "$CONFIG_REPO_DIR" ]; then
-                configs="$configs $(ls "$CONFIG_REPO_DIR"/*.yaml 2>/dev/null | xargs -n1 basename)"
-            fi
-            COMPREPLY=($(compgen -W "$configs" -- "$cur"))
-            return
-            ;;
-        remove)
-            # Complete with sources, manual configs, and profiles
-            local items=""
-            local sources_file=$(get_sources_file)
-            if [ -f "$sources_file" ]; then
-                items=$(cut -d'|' -f1 "$sources_file" 2>/dev/null)
-            fi
-            if [ -d "$MANUAL_CONFIG_DIR" ]; then
-                items="$items $(ls "$MANUAL_CONFIG_DIR"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//')"
-            fi
-            if [ -d "$CONFIG_REPO_DIR" ]; then
-                items="$items $(ls "$CONFIG_REPO_DIR"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/-[0-9]*-[0-9]*.yaml$//')"
-            fi
-            COMPREPLY=($(compgen -W "$items" -- "$cur"))
-            return
-            ;;
-        edit)
-            # Complete with manual configs only
-            local configs=""
-            if [ -d "$MANUAL_CONFIG_DIR" ]; then
-                configs=$(ls "$MANUAL_CONFIG_DIR"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//')
-            fi
-            COMPREPLY=($(compgen -W "$configs" -- "$cur"))
-            return
-            ;;
-    esac
-    
-    # Handle subcommand-specific completions
-    local i=1
-    while [ $i -lt $cword ]; do
-        if [[ "${words[$i]}" == "config" ]]; then
-            case "${words[$i+1]}" in
-                download|select|remove|edit)
-                    # Already handled above in prev cases
-                    return
-                    ;;
-            esac
-        fi
-        i=$((i+1))
-    done
-}
-
-# Zsh completion function
-_mihomoctl_zsh_completion() {
-    local -a commands
-    commands=(
-        'install:Install mihomo'
-        'uninstall:Uninstall mihomo'
-        'start:Start service'
-        'stop:Stop service'
-        'restart:Restart service'
-        'status:Show status'
-        'logs:Show logs'
-        'enable:Enable auto-start'
-        'disable:Disable auto-start'
-        'config:Manage configs'
-        'ui:Manage dashboard UI'
-    )
-    
-    local -a config_cmds
-    config_cmds=(
-        'add:Add source or import config'
-        'remove:Remove source/config/profile'
-        'list:List all'
-        'download:Download profile'
-        'select:Apply config'
-        'create:Create manual config'
-        'edit:Edit manual config'
-        'show:Show current config'
-    )
-    
-    local -a ui_cmds
-    ui_cmds=(
-        'install:Install UI'
-        'update:Update UI'
-        'status:Show UI status'
-        'uninstall:Remove UI'
-    )
-    
-    local -a ua_presets
-    ua_presets=(
-        'clash:Clash/v1.18.0'
-        'clashmeta:ClashMeta/v1.15.0'
-        'mihomo:mihomo/v1.19.0'
-        'surge:Surge/4.1500'
-        'quantumult:Quantumult/1.0.9'
-        'shadowrocket:Shadowrocket/2.1.91'
-        'mozilla:Mozilla browser UA'
-        'chrome:Chrome browser UA'
-        'curl:curl/7.81.0'
-    )
-    
-    _arguments \
-        '(-h --help)'{-h,--help}'[Show help]' \
-        '(-v --verbose)'{-v,--verbose}'[Verbose output]' \
-        '--list-ua[List User-Agent presets]' \
-        '1:command:->commands' \
-        '*::arg:->args'
-    
-    case "$state" in
-        commands)
-            _describe 'command' commands
-            ;;
-        args)
-            case "$words[1]" in
-                config)
-                    case "$words[2]" in
-                        download)
-                            local sources_file="${XDG_DATA_HOME:-$HOME/.local/share}/mihomo/sources.conf"
-                            local -a sources
-                            if [ -f "$sources_file" ]; then
-                                sources=($(cut -d'|' -f1 "$sources_file"))
-                            fi
-                            _arguments \
-                                '--ua+[User-Agent preset or custom]:ua:->ua' \
-                                '--user-agent+[User-Agent preset or custom]:ua:->ua' \
-                                '--list-ua[List UA presets]' \
-                                '1:source:($sources)'
-                            case "$state" in
-                                ua)
-                                    _describe 'User-Agent preset' ua_presets
-                                    ;;
-                            esac
-                            ;;
-                        select)
-                            local -a configs
-                            local manual_dir="${CONFIG_DIR}/manual"
-                            local profile_dir="${CONFIG_DIR}/profiles"
-                            [ -d "$manual_dir" ] && configs+=($(ls "$manual_dir"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//'))
-                            [ -d "$profile_dir" ] && configs+=($(ls "$profile_dir"/*.yaml 2>/dev/null | xargs -n1 basename))
-                            _describe 'config' configs
-                            ;;
-                        remove)
-                            local -a items
-                            local sources_file="${XDG_DATA_HOME:-$HOME/.local/share}/mihomo/sources.conf"
-                            [ -f "$sources_file" ] && items+=($(cut -d'|' -f1 "$sources_file"))
-                            [ -d "${CONFIG_DIR}/manual" ] && items+=($(ls "${CONFIG_DIR}/manual"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//'))
-                            [ -d "${CONFIG_DIR}/profiles" ] && items+=($(ls "${CONFIG_DIR}/profiles"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/-[0-9]*-[0-9]*.yaml$//'))
-                            _describe 'item' items
-                            ;;
-                        edit)
-                            local -a configs
-                            [ -d "${CONFIG_DIR}/manual" ] && configs+=($(ls "${CONFIG_DIR}/manual"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//'))
-                            _describe 'manual config' configs
-                            ;;
-                        *)
-                            _describe 'config command' config_cmds
-                            ;;
-                    esac
-                    ;;
-                ui)
-                    _describe 'ui command' ui_cmds
-                    ;;
-            esac
-            ;;
-    esac
-}
-
-do_completion() {
-    local shell="${1:-bash}"
-    
-    case "$shell" in
-        bash)
-            echo "# Bash completion for mihomoctl"
-            echo "# Add to ~/.bashrc or source directly:"
-            echo "# source <(mihomoctl completion bash)"
-            echo ""
-            echo "complete -F _mihomoctl_completion mihomoctl"
-            echo ""
-            cat << 'BASH_COMP'
-_mihomoctl_completion() {
-    local cur prev words cword
-    _init_completion || return
-    
-    local commands="install uninstall start stop restart status logs enable disable config ui"
-    local config_subcmds="add remove list download select create edit show"
-    local ui_subcmds="install update status uninstall"
-    local ua_presets="clash clashmeta mihomo surge quantumult shadowrocket mozilla chrome curl"
-    
-    case "$prev" in
-        mihomoctl)
-            COMPREPLY=($(compgen -W "$commands -h --help -v --verbose --list-ua" -- "$cur"))
-            return
-            ;;
-        config)
-            COMPREPLY=($(compgen -W "$config_subcmds" -- "$cur"))
-            return
-            ;;
-        ui)
-            COMPREPLY=($(compgen -W "$ui_subcmds" -- "$cur"))
-            return
-            ;;
-        --ua|--user-agent)
-            COMPREPLY=($(compgen -W "$ua_presets" -- "$cur"))
-            return
-            ;;
-        download)
-            local sources_file="${XDG_DATA_HOME:-$HOME/.local/share}/mihomo/sources.conf"
-            if [ -f "$sources_file" ]; then
-                local sources=$(cut -d'|' -f1 "$sources_file" 2>/dev/null)
-                COMPREPLY=($(compgen -W "$sources --ua --user-agent --list-ua" -- "$cur"))
-            fi
-            return
-            ;;
-        select)
-            local configs=""
-            [ -d "/etc/mihomo/manual" ] && configs=$(ls /etc/mihomo/manual/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//')
-            [ -d "/etc/mihomo/profiles" ] && configs="$configs $(ls /etc/mihomo/profiles/*.yaml 2>/dev/null | xargs -n1 basename)"
-            COMPREPLY=($(compgen -W "$configs" -- "$cur"))
-            return
-            ;;
-        remove)
-            local items=""
-            local sources_file="${XDG_DATA_HOME:-$HOME/.local/share}/mihomo/sources.conf"
-            [ -f "$sources_file" ] && items=$(cut -d'|' -f1 "$sources_file" 2>/dev/null)
-            [ -d "/etc/mihomo/manual" ] && items="$items $(ls /etc/mihomo/manual/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//')"
-            [ -d "/etc/mihomo/profiles" ] && items="$items $(ls /etc/mihomo/profiles/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/-[0-9]*-[0-9]*.yaml$//')"
-            COMPREPLY=($(compgen -W "$items" -- "$cur"))
-            return
-            ;;
-        edit)
-            local configs=""
-            [ -d "/etc/mihomo/manual" ] && configs=$(ls /etc/mihomo/manual/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//')
-            COMPREPLY=($(compgen -W "$configs" -- "$cur"))
-            return
-            ;;
-    esac
-}
-BASH_COMP
-            ;;
-        zsh)
-            echo "# Zsh completion for mihomoctl"
-            echo "# Add to ~/.zshrc or save to a file in your fpath:"
-            echo "# mihomoctl completion zsh > ~/.zsh/completion/_mihomoctl"
-            echo "# Then add 'fpath=(~/.zsh/completion $fpath)' to ~/.zshrc"
-            echo ""
-            echo "#compdef mihomoctl"
-            echo ""
-            cat << 'ZSH_COMP'
-_mihomoctl() {
-    local -a commands
-    commands=(
-        'install:Install mihomo'
-        'uninstall:Uninstall mihomo'
-        'start:Start service'
-        'stop:Stop service'
-        'restart:Restart service'
-        'status:Show status'
-        'logs:Show logs'
-        'enable:Enable auto-start'
-        'disable:Disable auto-start'
-        'config:Manage configs'
-        'ui:Manage dashboard UI'
-    )
-    
-    local -a config_cmds
-    config_cmds=(
-        'add:Add source or import config'
-        'remove:Remove source/config/profile'
-        'list:List all'
-        'download:Download profile'
-        'select:Apply config'
-        'create:Create manual config'
-        'edit:Edit manual config'
-        'show:Show current config'
-    )
-    
-    local -a ui_cmds
-    ui_cmds=(
-        'install:Install UI'
-        'update:Update UI'
-        'status:Show UI status'
-        'uninstall:Remove UI'
-    )
-    
-    local -a ua_presets
-    ua_presets=(
-        'clash:Clash/v1.18.0'
-        'clashmeta:ClashMeta/v1.15.0'
-        'mihomo:mihomo/v1.19.0'
-        'surge:Surge/4.1500'
-        'quantumult:Quantumult/1.0.9'
-        'shadowrocket:Shadowrocket/2.1.91'
-        'mozilla:Mozilla browser UA'
-        'chrome:Chrome browser UA'
-        'curl:curl/7.81.0'
-    )
-    
-    _arguments \
-        '(-h --help)'{-h,--help}'[Show help]' \
-        '(-v --verbose)'{-v,--verbose}'[Verbose output]' \
-        '--list-ua[List User-Agent presets]' \
-        '1:command:->commands' \
-        '*::arg:->args'
-    
-    case "$state" in
-        commands)
-            _describe 'command' commands
-            ;;
-        args)
-            case "$words[1]" in
-                config)
-                    case "$words[2]" in
-                        download)
-                            local sources_file="${XDG_DATA_HOME:-$HOME/.local/share}/mihomo/sources.conf"
-                            local -a sources
-                            [ -f "$sources_file" ] && sources=($(cut -d'|' -f1 "$sources_file"))
-                            _arguments \
-                                '--ua+[User-Agent preset or custom]:ua:->ua' \
-                                '--user-agent+[User-Agent preset or custom]:ua:->ua' \
-                                '--list-ua[List UA presets]' \
-                                '1:source:($sources)'
-                            case "$state" in
-                                ua) _describe 'User-Agent preset' ua_presets ;;
-                            esac
-                            ;;
-                        select)
-                            local -a configs
-                            local config_dir
-                            config_dir=$(cat ~/.config/mihomo/config-dir.conf 2>/dev/null || echo "/etc/mihomo")
-                            [ -d "$config_dir/manual" ] && configs+=($(ls "$config_dir/manual"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//'))
-                            [ -d "$config_dir/profiles" ] && configs+=($(ls "$config_dir/profiles"/*.yaml 2>/dev/null | xargs -n1 basename))
-                            _describe 'config' configs
-                            ;;
-                        remove)
-                            local -a items
-                            local sources_file="${XDG_DATA_HOME:-$HOME/.local/share}/mihomo/sources.conf"
-                            local config_dir
-                            config_dir=$(cat ~/.config/mihomo/config-dir.conf 2>/dev/null || echo "/etc/mihomo")
-                            [ -f "$sources_file" ] && items+=($(cut -d'|' -f1 "$sources_file"))
-                            [ -d "$config_dir/manual" ] && items+=($(ls "$config_dir/manual"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//'))
-                            [ -d "$config_dir/profiles" ] && items+=($(ls "$config_dir/profiles"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/-[0-9]*-[0-9]*.yaml$//'))
-                            _describe 'item' items
-                            ;;
-                        edit)
-                            local -a configs
-                            local config_dir
-                            config_dir=$(cat ~/.config/mihomo/config-dir.conf 2>/dev/null || echo "/etc/mihomo")
-                            [ -d "$config_dir/manual" ] && configs+=($(ls "$config_dir/manual"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//'))
-                            _describe 'manual config' configs
-                            ;;
-                        *) _describe 'config command' config_cmds ;;
-                    esac
-                    ;;
-                ui) _describe 'ui command' ui_cmds ;;
-            esac
-            ;;
-    esac
-}
-_mihomoctl
-ZSH_COMP
-            ;;
-        *)
-            log_error "Unknown shell: $shell"
-            echo "Supported: bash, zsh"
-            return 1
-            ;;
-    esac
 }
 
 show_help() {
@@ -1900,14 +1503,10 @@ Dashboard UI:
     status             Show UI status
     uninstall          Remove UI
 
-Shell Completion:
-  completion bash      Generate bash completion script
-  completion zsh       Generate zsh completion script
-  --list-ua            List available User-Agent presets
-
 Options:
     -h, --help          Show this help
    -v, --verbose       Enable verbose output
+   --list-ua           List available User-Agent presets
 
 Cache Management:
   The script caches downloaded binaries in /var/cache/mihomo/
@@ -1944,10 +1543,6 @@ Examples:
   
   # List available User-Agent presets
   mihomoctl --list-ua
-  
-  # Setup shell completion
-  source <(mihomoctl completion bash)       # Bash
-  mihomoctl completion zsh > ~/.zsh/completion/_mihomoctl  # Zsh
   
   # Create and use a manual config
   sudo mihomoctl config create myconfig
@@ -1998,9 +1593,6 @@ case "${1:-}" in
         ;;
     ui)
         do_ui "$2"
-        ;;
-    completion)
-        do_completion "${2:-bash}"
         ;;
     --list-ua)
         list_ua_presets

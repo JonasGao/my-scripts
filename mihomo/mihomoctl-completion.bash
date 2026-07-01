@@ -19,7 +19,7 @@ _mihomoctl_completion() {
     local ua_presets="clash clashmeta mihomo surge quantumult shadowrocket mozilla chrome curl"
 
     # Main commands
-    local main_commands="install uninstall start stop restart status logs enable disable config ui -h --help -v --verbose --list-ua completion"
+    local main_commands="install uninstall start stop restart status logs enable disable config ui -h --help -v --verbose --list-ua"
 
     # Handle specific cases
     case "${prev}" in
