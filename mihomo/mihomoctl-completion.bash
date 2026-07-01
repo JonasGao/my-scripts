@@ -15,8 +15,11 @@ _mihomoctl_completion() {
     local CONFIG_REPO_DIR="${CONFIG_DIR}/profiles"
     local SOURCES_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/mihomo/sources.conf"
 
+    # User-Agent presets
+    local ua_presets="clash clashmeta mihomo surge quantumult shadowrocket mozilla chrome curl"
+
     # Main commands
-    local main_commands="install uninstall start stop restart status logs enable disable config ui -h --help -v --verbose"
+    local main_commands="install uninstall start stop restart status logs enable disable config ui -h --help -v --verbose --list-ua completion"
 
     # Handle specific cases
     case "${prev}" in
@@ -88,6 +91,17 @@ _mihomoctl_completion() {
             COMPREPLY=( $(compgen -W "${ui_subcommands}" -- "${cur}") )
             return 0
             ;;
+        
+        --list-ua)
+            # No arguments after --list-ua
+            return 0
+            ;;
+        
+        completion)
+            # completion bash|zsh
+            COMPREPLY=( $(compgen -W "bash zsh" -- "${cur}") )
+            return 0
+            ;;
     esac
 
     # Handle config subcommands
@@ -136,13 +150,41 @@ _mihomoctl_completion() {
                     ;;
                 
                 download)
-                    # download <source> - complete with source names
+                    # download <source> [--ua|--user-agent <preset|custom>] [--list-ua]
+                    local word_count=$((cword - i - 1))
+                    
+                    # Check if previous word is --ua/--user-agent
+                    if [[ "${prev}" == "--ua" ]] || [[ "${prev}" == "--user-agent" ]]; then
+                        COMPREPLY=( $(compgen -W "${ua_presets}" -- "${cur}") )
+                        return 0
+                    fi
+                    
+                    # Get available sources
                     local sources=""
                     if [ -f "$SOURCES_FILE" ]; then
                         sources=$(cut -d'|' -f1 "$SOURCES_FILE")
                     fi
-                    COMPREPLY=( $(compgen -W "${sources}" -- "${cur}") )
-                    return 0
+                    
+                    # Options for download
+                    local download_opts="--ua --user-agent --list-ua"
+                    
+                    case "${cur}" in
+                        --*)
+                            COMPREPLY=( $(compgen -W "${download_opts}" -- "${cur}") )
+                            return 0
+                            ;;
+                        *)
+                            # Source name or option
+                            if [ "$word_count" -eq 1 ]; then
+                                # First positional arg: source name
+                                COMPREPLY=( $(compgen -W "${sources}" -- "${cur}") )
+                            else
+                                # After source: can be options
+                                COMPREPLY=( $(compgen -W "${download_opts}" -- "${cur}") )
+                            fi
+                            return 0
+                            ;;
+                    esac
                     ;;
                 
                 select)
