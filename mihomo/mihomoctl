@@ -293,6 +293,8 @@ Type=simple
 ExecStart=${INSTALL_DIR}/mihomo -d ${config_dir}
 Restart=on-failure
 RestartSec=5s
+StartLimitIntervalSec=60
+StartLimitBurst=5
 LimitNOFILE=1048576
 
 [Install]
