@@ -502,8 +502,26 @@ do_config_list() {
     echo "=== Current Active Config ==="
     echo ""
     
-    if [ -f "${CONFIG_DIR}/config.yaml" ]; then
-        echo "  ${CONFIG_DIR}/config.yaml ($(du -h "${CONFIG_DIR}/config.yaml" | cut -d' ' -f1))"
+    local source_file="${CONFIG_DIR}/.source"
+    local config_file="${CONFIG_DIR}/config.yaml"
+    
+    if [ -f "$source_file" ]; then
+        source "$source_file"
+        echo "  Using: $source_name ($source_type)"
+        echo "  Applied: $applied_at"
+        echo "  From: $source_path"
+    elif [ -f "$config_file" ]; then
+        local header_source=$(grep "^# Applied from:" "$config_file" 2>/dev/null | head -1)
+        local header_path=$(grep "^# Source path:" "$config_file" 2>/dev/null | head -1)
+        
+        if [ -n "$header_source" ]; then
+            echo "  $(echo "$header_source" | sed 's/^# //')"
+            if [ -n "$header_path" ]; then
+                echo "  $(echo "$header_path" | sed 's/^# /')"
+            fi
+        else
+            echo "  ${config_file} (no source tracking)"
+        fi
     else
         echo "  (no config applied)"
     fi
@@ -705,8 +723,18 @@ do_config_select_interactive() {
 
 apply_config() {
     local profile_path="$1"
+    local source_name=$(basename "$profile_path")
+    local source_type=""
     
-    log_info "Applying profile: $profile_path"
+    if [[ "$profile_path" == "${MANUAL_CONFIG_DIR}/"* ]]; then
+        source_type="manual"
+    elif [[ "$profile_path" == "${CONFIG_REPO_DIR}/"* ]]; then
+        source_type="profile"
+    else
+        source_type="external"
+    fi
+    
+    log_info "Applying profile: $source_name ($source_type)"
     
     if [ -f "${CONFIG_DIR}/config.yaml" ]; then
         cp "${CONFIG_DIR}/config.yaml" "${CONFIG_DIR}/config.yaml.bak"
@@ -714,7 +742,7 @@ apply_config() {
     fi
     
     cp "$profile_path" "${CONFIG_DIR}/config.yaml"
-    log_info "Applied config: $(basename "$profile_path")"
+    log_info "Applied config: $source_name"
     
     if ! grep -q "^port:" "${CONFIG_DIR}/config.yaml" 2>/dev/null && \
        ! grep -q "^mixed-port:" "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
@@ -728,7 +756,26 @@ apply_config() {
     
     ensure_allow_lan "${CONFIG_DIR}/config.yaml"
     
-    log_info "Config applied successfully"
+    local header_comment="# Applied from: $source_name ($source_type)
+# Source path: $profile_path
+# Applied at: $(date +%Y-%m-%d_%H:%M:%S)
+# Managed by mihomoctl
+
+"
+    
+    local tmp_config=$(mktemp)
+    echo "$header_comment" > "$tmp_config"
+    cat "${CONFIG_DIR}/config.yaml" >> "$tmp_config"
+    mv "$tmp_config" "${CONFIG_DIR}/config.yaml"
+    
+    cat > "${CONFIG_DIR}/.source" << EOF
+source_path=$profile_path
+source_name=$source_name
+source_type=$source_type
+applied_at=$(date +%Y-%m-%d_%H:%M:%S)
+EOF
+    
+    log_info "Config applied successfully (source tracked in header and .source)"
     
     if systemctl is-active --quiet mihomo 2>/dev/null; then
         log_info "Restarting mihomo service..."
@@ -892,6 +939,7 @@ do_config_edit() {
 
 do_config_show() {
     local current="${CONFIG_DIR}/config.yaml"
+    local source_file="${CONFIG_DIR}/.source"
     
     echo ""
     echo "=== Current Active Config ==="
@@ -907,32 +955,64 @@ do_config_show() {
     echo "  Size: $size"
     echo ""
     
-    # Try to identify source by comparing contents
-    local identified=""
-    if [ -d "$MANUAL_CONFIG_DIR" ]; then
-        for f in "$MANUAL_CONFIG_DIR"/*; do
-            [ -f "$f" ] || continue
-            if cmp -s "$current" "$f" 2>/dev/null; then
-                identified="Manual config: $(basename "$f")"
-                break
-            fi
-        done
+    echo "=== Source Tracking ==="
+    echo ""
+    
+    local tracked_source=""
+    local tracked_type=""
+    local tracked_time=""
+    local tracked_path=""
+    
+    if [ -f "$source_file" ]; then
+        source "$source_file"
+        tracked_source="$source_name"
+        tracked_type="$source_type"
+        tracked_time="$applied_at"
+        tracked_path="$source_path"
+        echo "  .source metadata:"
+        echo "    Name: $source_name"
+        echo "    Type: $source_type"
+        echo "    Applied: $applied_at"
+        echo "    Path: $source_path"
+        echo ""
     fi
     
-    if [ -z "$identified" ] && [ -d "$CONFIG_REPO_DIR" ]; then
-        for f in "$CONFIG_REPO_DIR"/*; do
-            [ -f "$f" ] || continue
-            if cmp -s "$current" "$f" 2>/dev/null; then
-                identified="Downloaded profile: $(basename "$f")"
-                break
-            fi
-        done
+    local header_source=$(grep "^# Applied from:" "$current" 2>/dev/null | head -1 | sed 's/^# //')
+    local header_path=$(grep "^# Source path:" "$current" 2>/dev/null | head -1 | sed 's/^# Source path: //')
+    local header_time=$(grep "^# Applied at:" "$current" 2>/dev/null | head -1 | sed 's/^# Applied at: //')
+    
+    if [ -n "$header_source" ]; then
+        echo "  Config header comment:"
+        echo "    $header_source"
+        if [ -n "$header_path" ]; then
+            echo "    Source: $header_path"
+        fi
+        if [ -n "$header_time" ]; then
+            echo "    Time: $header_time"
+        fi
+        echo ""
     fi
     
-    if [ -n "$identified" ]; then
-        echo "  Source: $identified"
+    echo "=== Summary ==="
+    echo ""
+    
+    if [ -n "$tracked_source" ] && [ -n "$header_source" ]; then
+        if [ "$tracked_path" = "$header_path" ]; then
+            echo "  ✓ Source tracking consistent"
+            echo "    Using: $tracked_source ($tracked_type)"
+        else
+            echo "  ⚠ Source tracking mismatch detected"
+            echo "    .source: $tracked_path"
+            echo "    header:  $header_path"
+            echo "  (config may have been edited or replaced manually)"
+        fi
+    elif [ -n "$tracked_source" ]; then
+        echo "  Source: $tracked_source ($tracked_type) - from .source file"
+    elif [ -n "$header_source" ]; then
+        echo "  Source: $header_source - from header comment"
     else
-        echo "  Source: (outside managed profiles — edited manually or from install)"
+        echo "  ⚠ No source tracking found"
+        echo "  (config may have been created before tracking feature or edited manually)"
     fi
     
     echo ""
@@ -943,6 +1023,7 @@ do_config_show() {
     echo "Actions:"
     echo "  List configs:  mihomoctl config list"
     echo "  Switch:        sudo mihomoctl config select <name_or_path>"
+    echo "  View header:   head -10 ${CONFIG_DIR}/config.yaml"
 }
 
 do_config_list_configs() {
