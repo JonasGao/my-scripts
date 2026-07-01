@@ -289,6 +289,7 @@ _px_test_proxy() {
 	# 测试每个 URL
 	local success_count=0
 	local fail_count=0
+	local error_tmpfile
 	
 	for url in "${test_urls[@]}"; do
 		echo -n "  [$(date +%H:%M:%S)] 测试 $url ... "
@@ -296,23 +297,28 @@ _px_test_proxy() {
 		local exit_code=1
 		local start_time
 		start_time=$(date +%s)
+		error_tmpfile=$(mktemp)
 		
 		if [ $has_curl -eq 1 ]; then
 			# 使用 curl 测试
+			local curl_error
 			if [ "$proxy_type" = "socks5" ] || [ "$proxy_type" = "socks5h" ]; then
-				if curl -x "$proxy" -sS --connect-timeout "$timeout" --max-time "$((timeout * 2))" "$url" >/dev/null 2>&1; then
-					exit_code=0
-				fi
+				curl_error=$(curl -x "$proxy" -sS --connect-timeout "$timeout" --max-time "$((timeout * 2))" "$url" 2>&1 >/dev/null)
 			else
-				if curl --proxy "$proxy" -sS --connect-timeout "$timeout" --max-time "$((timeout * 2))" "$url" >/dev/null 2>&1; then
-					exit_code=0
-				fi
+				curl_error=$(curl --proxy "$proxy" -sS --connect-timeout "$timeout" --max-time "$((timeout * 2))" "$url" 2>&1 >/dev/null)
+			fi
+			exit_code=$?
+			if [ -n "$curl_error" ]; then
+				echo "$curl_error" > "$error_tmpfile"
 			fi
 		else
 			# 使用 wget 测试
-			if wget -e "use_proxy=yes" -e "http_proxy=$proxy" -e "https_proxy=$proxy" \
-				--timeout="$timeout" --tries=1 -q --spider "$url" >/dev/null 2>&1; then
-				exit_code=0
+			local wget_error
+			wget_error=$(wget -e "use_proxy=yes" -e "http_proxy=$proxy" -e "https_proxy=$proxy" \
+				--timeout="$timeout" --tries=1 -q --spider "$url" 2>&1 >/dev/null)
+			exit_code=$?
+			if [ -n "$wget_error" ]; then
+				echo "$wget_error" > "$error_tmpfile"
 			fi
 		fi
 		
@@ -325,8 +331,13 @@ _px_test_proxy() {
 			((success_count++))
 		else
 			echo -e "\033[31m✗ 失败\033[0m (${duration}s)"
+			if [ -s "$error_tmpfile" ]; then
+				echo -e "    \033[2m原因: $(cat "$error_tmpfile")\033[0m"
+			fi
 			((fail_count++))
 		fi
+		
+		rm -f "$error_tmpfile"
 	done
 	
 	echo ""
