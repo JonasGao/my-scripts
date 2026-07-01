@@ -24,13 +24,13 @@ _mihomoctl_completion() {
     # Handle specific cases
     case "${prev}" in
         mihomoctl)
-            COMPREPLY=($( compgen -W "${main_commands}" -- "${cur}"))
+            mapfile -t COMPREPLY < <(compgen -W "${main_commands}" -- "${cur}")
             return 0
             ;;
 
         -f | --force)
             # After -f, next could be install/uninstall command
-            COMPREPLY=($( compgen -W "${main_commands}" -- "${cur}"))
+            mapfile -t COMPREPLY < <(compgen -W "${main_commands}" -- "${cur}")
             return 0
             ;;
 
@@ -43,7 +43,7 @@ _mihomoctl_completion() {
         install)
             case "${cur}" in
                 -*)
-                    COMPREPLY=($( compgen -W "-f --force --config-dir" -- "${cur}"))
+                    mapfile -t COMPREPLY < <(compgen -W "-f --force --config-dir" -- "${cur}")
                     ;;
             esac
             return 0
@@ -52,7 +52,7 @@ _mihomoctl_completion() {
         uninstall)
             case "${cur}" in
                 -*)
-                    COMPREPLY=($( compgen -W "-f" -- "${cur}"))
+                    mapfile -t COMPREPLY < <(compgen -W "-f" -- "${cur}")
                     ;;
             esac
             return 0
@@ -64,9 +64,9 @@ _mihomoctl_completion() {
                 logs)
                     # Number or -f/--follow
                     if [[ ${cur} =~ ^[0-9]*$   ]]; then
-                        COMPREPLY=($( compgen -W "-f --follow 10 20 50 100 200 500" -- "${cur}"))
+                        mapfile -t COMPREPLY < <(compgen -W "-f --follow 10 20 50 100 200 500" -- "${cur}")
                     else
-                        COMPREPLY=($( compgen -W "-f --follow" -- "${cur}"))
+                        mapfile -t COMPREPLY < <(compgen -W "-f --follow" -- "${cur}")
                     fi
                     ;;
                 -f | --follow)
@@ -74,7 +74,7 @@ _mihomoctl_completion() {
                     ;;
                 *)
                     # After number, suggest -f/--follow
-                    COMPREPLY=($( compgen -W "-f --follow" -- "${cur}"))
+                    mapfile -t COMPREPLY < <(compgen -W "-f --follow" -- "${cur}")
                     ;;
             esac
             return 0
@@ -82,13 +82,13 @@ _mihomoctl_completion() {
 
         config)
             local config_subcommands="add remove list download select create edit show"
-            COMPREPLY=($( compgen -W "${config_subcommands}" -- "${cur}"))
+            mapfile -t COMPREPLY < <(compgen -W "${config_subcommands}" -- "${cur}")
             return 0
             ;;
 
         ui)
             local ui_subcommands="install update status uninstall"
-            COMPREPLY=($( compgen -W "${ui_subcommands}" -- "${cur}"))
+            mapfile -t COMPREPLY < <(compgen -W "${ui_subcommands}" -- "${cur}")
             return 0
             ;;
 
@@ -139,7 +139,7 @@ _mihomoctl_completion() {
                         done
                     fi
 
-                    COMPREPLY=($( compgen -W "${configs}" -- "${cur}"))
+                    mapfile -t COMPREPLY < <(compgen -W "${configs}" -- "${cur}")
                     return 0
                     ;;
 
@@ -149,7 +149,7 @@ _mihomoctl_completion() {
 
                     # Check if previous word is --ua/--user-agent
                     if [[ ${prev} == "--ua"   ]] || [[ ${prev} == "--user-agent"   ]]; then
-                        COMPREPLY=($( compgen -W "${ua_presets}" -- "${cur}"))
+                        mapfile -t COMPREPLY < <(compgen -W "${ua_presets}" -- "${cur}")
                         return 0
                     fi
 
@@ -164,17 +164,17 @@ _mihomoctl_completion() {
 
                     case "${cur}" in
                         --*)
-                            COMPREPLY=($( compgen -W "${download_opts}" -- "${cur}"))
+                            mapfile -t COMPREPLY < <(compgen -W "${download_opts}" -- "${cur}")
                             return 0
                             ;;
                         *)
                             # Source name or option
                             if [ "$word_count" -eq 1 ]; then
                                 # First positional arg: source name
-                                COMPREPLY=($( compgen -W "${sources}" -- "${cur}"))
+                                mapfile -t COMPREPLY < <(compgen -W "${sources}" -- "${cur}")
                             else
                                 # After source: can be options
-                                COMPREPLY=($( compgen -W "${download_opts}" -- "${cur}"))
+                                mapfile -t COMPREPLY < <(compgen -W "${download_opts}" -- "${cur}")
                             fi
                             return 0
                             ;;
@@ -203,7 +203,7 @@ _mihomoctl_completion() {
                     if [[ ${cur} == /*   ]] || [[ ${cur} == .*   ]]; then
                         _filedir
                     else
-                        COMPREPLY=($( compgen -W "${configs}" -- "${cur}"))
+                        mapfile -t COMPREPLY < <(compgen -W "${configs}" -- "${cur}")
                     fi
                     return 0
                     ;;
@@ -223,7 +223,7 @@ _mihomoctl_completion() {
     done
 
     # Default: complete with main commands
-    COMPREPLY=($( compgen -W "${main_commands}" -- "${cur}"))
+    mapfile -t COMPREPLY < <(compgen -W "${main_commands}" -- "${cur}")
 }
 
 complete -F _mihomoctl_completion mihomoctl

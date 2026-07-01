@@ -9,7 +9,8 @@ get_config_dir() {
     local config_file="${HOME}/.config/mihomo/config-dir.conf"
 
     if [ -f "$config_file" ]; then
-        local saved_dir=$(cat "$config_file" 2>/dev/null)
+        local saved_dir
+        saved_dir=$(cat "$config_file" 2>/dev/null)
         if [ -n "$saved_dir" ] && [ -d "$saved_dir" ]; then
             echo "$saved_dir"
             return
@@ -26,7 +27,7 @@ SYSTEMD_DIR="/etc/systemd/system"
 CONFIG_REPO_DIR="${CONFIG_DIR}/profiles"
 MANUAL_CONFIG_DIR="${CONFIG_DIR}/manual"
 UI_DIR="${CONFIG_DIR}/ui"
-LOG_DIR="/var/log/mihomo"
+# LOG_DIR="/var/log/mihomo"  # Unused - reserved for future use
 
 UI_REPO="https://github.com/Zephyruso/zashboard/releases/download/latest/dist-no-fonts.zip"
 VERBOSE="${VERBOSE:-0}"
@@ -47,7 +48,7 @@ declare -A UA_PRESETS=(
 
 # XDG 数据目录（存储配置源）
 XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-SOURCES_FILE="${XDG_DATA_HOME}/mihomo/sources.conf"
+# SOURCES_FILE="${XDG_DATA_HOME}/mihomo/sources.conf"  # Unused - see get_sources_file()
 
 get_sources_file() {
     local data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -84,11 +85,11 @@ list_ua_presets() {
 }
 
 get_manual_configs() {
-    [ -d "$MANUAL_CONFIG_DIR" ] && ls "$MANUAL_CONFIG_DIR"/*.yaml 2>/dev/null | xargs -n1 basename | sed 's/.yaml$//'
+    [ -d "$MANUAL_CONFIG_DIR" ] && find "$MANUAL_CONFIG_DIR" -maxdepth 1 -name '*.yaml' -printf '%f\n' 2>/dev/null | sed 's/\.yaml$//'
 }
 
 get_profile_configs() {
-    [ -d "$CONFIG_REPO_DIR" ] && ls "$CONFIG_REPO_DIR"/*.yaml 2>/dev/null | xargs -n1 basename
+    [ -d "$CONFIG_REPO_DIR" ] && find "$CONFIG_REPO_DIR" -maxdepth 1 -name '*.yaml' -printf '%f\n' 2>/dev/null
 }
 
 get_all_configs() {
@@ -99,7 +100,8 @@ get_all_configs() {
 }
 
 get_sources() {
-    local sources_file=$(get_sources_file)
+    local sources_file
+    sources_file=$(get_sources_file)
     [ -f "$sources_file" ] && cut -d'|' -f1 "$sources_file"
 }
 
@@ -152,7 +154,8 @@ esac
 
 get_cache_path() {
     local url="$1"
-    local filename=$(basename "$url" | sed 's/?.*//')
+    local filename
+    filename=$(basename "$url" | sed 's/?.*//')
     echo "${CACHE_DIR}/${filename}"
 }
 
@@ -187,8 +190,10 @@ curl_progress() {
     local force_download="${3:-0}"
     mkdir -p "$CACHE_DIR"
 
-    local cached_file=$(get_cache_path "$url")
-    local uncached_file=$(get_uncompressed_path "$cached_file")
+    local cached_file
+    cached_file=$(get_cache_path "$url")
+    local uncached_file
+    uncached_file=$(get_uncompressed_path "$cached_file")
 
     log_info "Downloading: $url"
 
@@ -223,7 +228,8 @@ curl_progress() {
 
 cache_uncompressed() {
     local gz_file="$1"
-    local bin_file=$(get_uncompressed_path "$gz_file")
+    local bin_file
+    bin_file=$(get_uncompressed_path "$gz_file")
 
     if [ ! -f "$bin_file" ]; then
         gunzip -c "$gz_file" >"$bin_file"
@@ -270,10 +276,11 @@ do_install() {
     fi
 
     local url="${MIRROR}https://github.com/MetaCubeX/mihomo/releases/download/${VERSION}/mihomo-${MIRROR_ARCH}-v2-${VERSION}.gz"
-    local tmpfile=$(mktemp)
+    local tmpfile
+    tmpfile=$(mktemp)
     log_debug "Temp file: $tmpfile"
 
-    trap "rm -f '$tmpfile' '${tmpfile}.uncompressed'" EXIT
+    trap 'rm -f "$tmpfile" "${tmpfile}.uncompressed"' EXIT
 
     log_info "Downloading mihomo binary..."
     if ! curl_progress "$url" "$tmpfile" "$force_download"; then
@@ -287,7 +294,8 @@ do_install() {
 
     log_info "Processing binary..."
     local binary_file="$tmpfile"
-    local file_type=$(file "$tmpfile" 2>/dev/null || echo "unknown")
+    local file_type
+    file_type=$(file "$tmpfile" 2>/dev/null || echo "unknown")
 
     if echo "$file_type" | grep -q "gzip"; then
         log_debug "File is gzip format, decompressing..."
@@ -296,7 +304,8 @@ do_install() {
             exit 1
         }
 
-        local cached_gz=$(get_cache_path "$url")
+        local cached_gz
+        cached_gz=$(get_cache_path "$url")
         if [ ! -f "$cached_gz" ]; then
             cp "$tmpfile" "$cached_gz"
             log_info "Cached: $cached_gz"
@@ -456,7 +465,8 @@ do_config_add() {
     fi
 
     # Otherwise, treat it as a URL source
-    local sources_file=$(get_sources_file)
+    local sources_file
+    sources_file=$(get_sources_file)
     mkdir -p "$(dirname "$sources_file")"
 
     if [ -f "$sources_file" ] && grep -q "^${name}|" "$sources_file"; then
@@ -489,7 +499,8 @@ do_config_remove() {
     local found=0
 
     # 1. Check profile sources
-    local sources_file=$(get_sources_file)
+    local sources_file
+    sources_file=$(get_sources_file)
     if [ -f "$sources_file" ] && grep -q "^${name}|" "$sources_file"; then
         sed -i "/^${name}|/d" "$sources_file"
         log_info "Removed source: $name"
@@ -520,7 +531,8 @@ do_config_remove() {
 }
 
 do_config_list() {
-    local sources_file=$(get_sources_file)
+    local sources_file
+    sources_file=$(get_sources_file)
 
     echo ""
     echo "=== Profile Sources ==="
@@ -544,6 +556,7 @@ do_config_list() {
     echo ""
 
     if [ -d "$CONFIG_REPO_DIR" ] && [ -n "$(ls -A "$CONFIG_REPO_DIR" 2>/dev/null)" ]; then
+        # shellcheck disable=SC2012
         ls -lh "$CONFIG_REPO_DIR" | tail -n +2 | awk '{printf "  %s (%s)\n", $9, $5}'
     else
         echo "  (no profiles downloaded)"
@@ -554,6 +567,7 @@ do_config_list() {
     echo ""
 
     if [ -d "$MANUAL_CONFIG_DIR" ] && [ -n "$(ls -A "$MANUAL_CONFIG_DIR" 2>/dev/null)" ]; then
+        # shellcheck disable=SC2012
         ls -lh "$MANUAL_CONFIG_DIR" | tail -n +2 | awk '{printf "  %s (%s)\n", $9, $5}'
     else
         echo "  (no manual configs created)"
@@ -570,16 +584,21 @@ do_config_list() {
     local config_file="${CONFIG_DIR}/config.yaml"
 
     if [ -f "$source_file" ]; then
+        # shellcheck disable=SC1090,SC2154
         source "$source_file"
         echo "  Using: $source_name ($source_type)"
+        # shellcheck disable=SC2154
         echo "  Applied: $applied_at"
+        # shellcheck disable=SC2154
         echo "  From: $source_path"
     elif [ -f "$config_file" ]; then
-        local header_source=$(grep "^# Applied from:" "$config_file" 2>/dev/null | head -1)
-        local header_path=$(grep "^# Source path:" "$config_file" 2>/dev/null | head -1)
+        local header_source
+        header_source=$(grep "^# Applied from:" "$config_file" 2>/dev/null | head -1)
+        local header_path
+        header_path=$(grep "^# Source path:" "$config_file" 2>/dev/null | head -1)
 
         if [ -n "$header_source" ]; then
-            echo "  $(echo "$header_source" | sed 's/^# //')"
+            echo "  ${header_source#\# }"
             if [ -n "$header_path" ]; then
                 echo "  $(echo "$header_path" | sed 's/^# /')"
             fi
@@ -639,7 +658,8 @@ do_config_download() {
         return 1
     fi
 
-    local sources_file=$(get_sources_file)
+    local sources_file
+    sources_file=$(get_sources_file)
 
     if [ ! -f "$sources_file" ]; then
         log_error "No sources configured"
@@ -647,7 +667,8 @@ do_config_download() {
         return 1
     fi
 
-    local source_line=$(grep "^${source_name}|" "$sources_file")
+    local source_line
+    source_line=$(grep "^${source_name}|" "$sources_file")
     if [ -z "$source_line" ]; then
         log_error "Source '$source_name' not found"
         echo "Available sources:"
@@ -655,11 +676,13 @@ do_config_download() {
         return 1
     fi
 
-    local url=$(echo "$source_line" | cut -d'|' -f2)
+    local url
+    url=$(echo "$source_line" | cut -d'|' -f2)
 
     mkdir -p "$CONFIG_REPO_DIR"
 
-    local output_file="${CONFIG_REPO_DIR}/${source_name}-$(date +%Y%m%d-%H%M%S).yaml"
+    local output_file
+    output_file="${CONFIG_REPO_DIR}/${source_name}-$(date +%Y%m%d-%H%M%S).yaml"
 
     echo ""
     echo "=== Download Target ==="
@@ -686,7 +709,8 @@ do_config_download() {
         log_error "Failed to download profile (HTTP $http_code)"
 
         if [ -f "$tmpfile" ] && [ -s "$tmpfile" ]; then
-            local body_size=$(wc -c <"$tmpfile"  2>/dev/null || echo 0)
+            local body_size
+            body_size=$(wc -c <"$tmpfile"  2>/dev/null || echo 0)
             echo ""
             echo "=== Response Body (first 500 bytes) ==="
 
@@ -740,7 +764,8 @@ do_config_download() {
     fi
 
     mv "$tmpfile" "$output_file"
-    local size=$(du -h "$output_file" | cut -d' ' -f1)
+    local size
+    size=$(du -h "$output_file" | cut -d' ' -f1)
     log_info "Profile saved: $output_file ($size)"
     echo ""
     echo "To use this profile:"
@@ -788,8 +813,10 @@ do_config_select_interactive() {
     local i=1
     for config in "${configs[@]}"; do
         local file="${files[i - 1]}"
-        local size=$(du -h "$file" | cut -d' ' -f1)
-        local timestamp=$(stat -c %y "$file" 2>/dev/null | cut -d' ' -f1)
+        local size
+        size=$(du -h "$file" | cut -d' ' -f1)
+        local timestamp
+        timestamp=$(stat -c %y "$file" 2>/dev/null | cut -d' ' -f1)
 
         printf "%2d) [%-7s] %s (%s, %s)\n" \
             "$i" "${types[i - 1]}" "$config" "$size" "$timestamp"
@@ -823,7 +850,8 @@ do_config_select_interactive() {
 
 apply_config() {
     local profile_path="$1"
-    local source_name=$(basename "$profile_path")
+    local source_name
+    source_name=$(basename "$profile_path")
     local source_type=""
 
     if [[ $profile_path == "${MANUAL_CONFIG_DIR}/"*   ]]; then
@@ -856,14 +884,16 @@ apply_config() {
 
     ensure_allow_lan "${CONFIG_DIR}/config.yaml"
 
-    local header_comment="# Applied from: $source_name ($source_type)
+    local header_comment
+    header_comment="# Applied from: $source_name ($source_type)
 # Source path: $profile_path
 # Applied at: $(date +%Y-%m-%d_%H:%M:%S)
 # Managed by mihomoctl
 
 "
 
-    local tmp_config=$(mktemp)
+    local tmp_config
+    tmp_config=$(mktemp)
     echo "$header_comment" >"$tmp_config"
     cat "${CONFIG_DIR}/config.yaml" >>"$tmp_config"
     mv "$tmp_config" "${CONFIG_DIR}/config.yaml"
@@ -998,7 +1028,7 @@ do_config_edit() {
         log_error "Config name required"
         echo "Usage: mihomoctl config edit <name>"
         echo ""
-        echo 'Opens the config file in your default editor ($EDITOR, defaults to vim).'
+        echo "Opens the config file in your default editor (\$EDITOR, defaults to vim)."
         echo ""
         echo "Available:"
         do_config_list_configs
@@ -1050,7 +1080,8 @@ do_config_show() {
         return 0
     fi
 
-    local size=$(du -h "$current" | cut -d' ' -f1)
+    local size
+    size=$(du -h "$current" | cut -d' ' -f1)
     echo "  Path: $current"
     echo "  Size: $size"
     echo ""
@@ -1060,14 +1091,13 @@ do_config_show() {
 
     local tracked_source=""
     local tracked_type=""
-    local tracked_time=""
     local tracked_path=""
 
     if [ -f "$source_file" ]; then
+        # shellcheck disable=SC1090,SC2154
         source "$source_file"
         tracked_source="$source_name"
         tracked_type="$source_type"
-        tracked_time="$applied_at"
         tracked_path="$source_path"
         echo "  .source metadata:"
         echo "    Name: $source_name"
@@ -1077,9 +1107,12 @@ do_config_show() {
         echo ""
     fi
 
-    local header_source=$(grep "^# Applied from:" "$current" 2>/dev/null | head -1 | sed 's/^# //')
-    local header_path=$(grep "^# Source path:" "$current" 2>/dev/null | head -1 | sed 's/^# Source path: //')
-    local header_time=$(grep "^# Applied at:" "$current" 2>/dev/null | head -1 | sed 's/^# Applied at: //')
+    local header_source
+    header_source=$(grep "^# Applied from:" "$current" 2>/dev/null | head -1 | sed 's/^# //')
+    local header_path
+    header_path=$(grep "^# Source path:" "$current" 2>/dev/null | head -1 | sed 's/^# Source path: //')
+    local header_time
+    header_time=$(grep "^# Applied at:" "$current" 2>/dev/null | head -1 | sed 's/^# Applied at: //')
 
     if [ -n "$header_source" ]; then
         echo "  Config header comment:"
@@ -1128,12 +1161,16 @@ do_config_show() {
 
 do_config_list_configs() {
     echo "Manual configs:"
-    local manuals=$(get_manual_configs)
+    local manuals
+    manuals=$(get_manual_configs)
+    # shellcheck disable=SC2001
     [ -n "$manuals" ] && echo "$manuals" | sed 's/^/  /' || echo "  (none — create one: mihomoctl config create <name>)"
 
     echo ""
     echo "Downloaded profiles:"
-    local profiles=$(get_profile_configs)
+    local profiles
+    profiles=$(get_profile_configs)
+    # shellcheck disable=SC2001
     [ -n "$profiles" ] && echo "$profiles" | sed 's/^/  /' || echo "  (none — download one: sudo mihomoctl config download <source>)"
 }
 
@@ -1335,8 +1372,9 @@ do_ui_install() {
     log_info "Installing zashboard UI..."
     mkdir -p "$UI_DIR"
 
-    local tmpdir=$(mktemp -d)
-    trap "rm -rf '$tmpdir'" EXIT
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
 
     log_info "Downloading zashboard..."
     local tmpfile="$tmpdir/dist.zip"
@@ -1352,7 +1390,7 @@ do_ui_install() {
     fi
 
     log_info "Extracting UI files..."
-    cd "$tmpdir"
+    cd "$tmpdir" || return
 
     # 检查 unzip 是否可用
     if command -v unzip >/dev/null 2>&1; then
@@ -1387,7 +1425,7 @@ do_ui_install() {
     log_debug "Found dist at: $dist_dir"
 
     # 清除旧的 UI 文件
-    rm -rf "$UI_DIR"/*
+    rm -rf "${UI_DIR:?}"/*
 
     # 复制文件
     if ! cp -r "$dist_dir"/* "$UI_DIR/" 2>/dev/null; then
@@ -1405,7 +1443,8 @@ do_ui_install() {
         fi
     fi
 
-    local size=$(du -sh "$UI_DIR" | cut -d' ' -f1)
+    local size
+    size=$(du -sh "$UI_DIR" | cut -d' ' -f1)
     log_info "UI installed successfully: $size"
     echo ""
     echo "UI path: $UI_DIR"
