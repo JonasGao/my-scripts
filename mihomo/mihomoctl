@@ -543,11 +543,18 @@ do_config_download() {
     
     local output_file="${CONFIG_REPO_DIR}/${source_name}-$(date +%Y%m%d-%H%M%S).yaml"
     
-    log_info "Downloading profile from: $source_name"
-    log_debug "URL: $url"
+    echo ""
+    echo "=== Download Target ==="
+    echo "  Source:  $source_name"
+    echo "  URL:     $url"
+    echo "  Save to: $output_file"
+    echo "  UA:      $USER_AGENT"
+    echo ""
     
     local tmpfile="${output_file}.tmp"
     local http_code
+    
+    log_info "Downloading..."
     
     http_code=$(curl -w "%{http_code}" -k -L -A "$USER_AGENT" --connect-timeout 30 -m 60 -o "$tmpfile" "$url" 2>&1 | tail -n1)
     
@@ -559,6 +566,29 @@ do_config_download() {
     
     if [ "$http_code" != "200" ]; then
         log_error "Failed to download profile (HTTP $http_code)"
+        
+        if [ -f "$tmpfile" ] && [ -s "$tmpfile" ]; then
+            local body_size=$(wc -c < "$tmpfile" 2>/dev/null || echo 0)
+            echo ""
+            echo "=== Response Body (first 500 bytes) ==="
+            
+            if [ "$body_size" -gt 500 ]; then
+                head -c 500 "$tmpfile" 2>/dev/null
+                echo ""
+                echo "... (total ${body_size} bytes)"
+            else
+                cat "$tmpfile" 2>/dev/null
+            fi
+            echo ""
+            
+            if head -c 10 "$tmpfile" 2>/dev/null | grep -q "{"; then
+                if command -v jq >/dev/null 2>&1; then
+                    echo "Parsed JSON:"
+                    jq '.' "$tmpfile" 2>/dev/null | head -20 || cat "$tmpfile" | head -20
+                    echo ""
+                fi
+            fi
+        fi
         
         if [ "$http_code" = "404" ]; then
             log_error "Profile not found (404)"
@@ -582,6 +612,11 @@ do_config_download() {
     
     if ! head -c 100 "$tmpfile" | grep -qE "^(port|mixed-port|#|proxies)"; then
         log_error "Downloaded file appears to be invalid or incomplete"
+        echo ""
+        echo "=== First 200 bytes ==="
+        head -c 200 "$tmpfile" 2>/dev/null
+        echo ""
+        echo ""
         rm -f "$tmpfile"
         return 1
     fi
