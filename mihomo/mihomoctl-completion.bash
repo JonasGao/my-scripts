@@ -96,12 +96,6 @@ _mihomoctl_completion() {
             # No arguments after --list-ua
             return 0
             ;;
-        
-        completion)
-            # completion bash|zsh
-            COMPREPLY=( $(compgen -W "bash zsh" -- "${cur}") )
-            return 0
-            ;;
     esac
 
     # Handle config subcommands
