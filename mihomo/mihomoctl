@@ -79,7 +79,7 @@ case "${1:-}" in
                 ;;
         esac
         ;;
-    status|--help|-h)
+    status|logs|--help|-h)
         ;;
 esac
 
@@ -1012,6 +1012,24 @@ do_status() {
     systemctl --no-pager status mihomo 2>/dev/null
 }
 
+do_logs() {
+    local lines="${1:-100}"
+    local follow="${2:-}"
+    
+    if ! [ -f "${INSTALL_DIR}/mihomo" ]; then
+        log_error "Mihomo not installed"
+        return 1
+    fi
+    
+    if [ "$follow" = "-f" ] || [ "$follow" = "--follow" ]; then
+        log_info "Following mihomo service logs (press Ctrl+C to stop)..."
+        journalctl -u mihomo -f
+    else
+        log_info "Showing last $lines lines of mihomo service logs..."
+        journalctl -u mihomo --no-pager -n "$lines"
+    fi
+}
+
 do_enable() {
     if ! [ -f "${INSTALL_DIR}/mihomo" ]; then
         log_error "Mihomo not installed. Run: mihomoctl install"
@@ -1245,6 +1263,8 @@ Service Management:
   stop                 Stop mihomo service
   restart              Restart mihomo service
   status               Show service status
+  logs [lines]         Show service logs (default: 100 lines)
+  logs [lines] -f      Follow service logs in real-time
   enable               Enable auto-start on boot
   disable              Disable auto-start
 
@@ -1280,6 +1300,11 @@ Cache Management:
 Examples:
   sudo mihomoctl install
   sudo mihomoctl start
+  
+  # View service logs
+  mihomoctl logs                # Last 100 lines
+  mihomoctl logs 50             # Last 50 lines
+  mihomoctl logs 100 -f         # Follow logs in real-time
   
   # Install with custom config directory
   sudo mihomoctl install --config-dir /opt/mihomo-config
@@ -1330,6 +1355,9 @@ case "${1:-}" in
         ;;
     status)
         do_status
+        ;;
+    logs)
+        do_logs "${2:-}" "${3:-}"
         ;;
     enable)
         do_enable
