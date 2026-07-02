@@ -607,10 +607,14 @@ _px_completion() {
 			COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
 			return
 			;;
+		--install-completion)
+			COMPREPLY=($(compgen -W "--system --user" -- "${cur}"))
+			return
+			;;
 	esac
 	
 	if [[ "${cur}" == -* ]]; then
-		COMPREPLY=($(compgen -W "-h --help -l -a -d -D -t -c -v -s -u --install-completion" -- "${cur}"))
+		COMPREPLY=($(compgen -W "-h --help -l -a -d -D -t -c -v -s -u --install-completion --system --user" -- "${cur}"))
 		return
 	fi
 	
@@ -624,24 +628,35 @@ _px_register_completion() {
 }
 
 _px_install_completion() {
-	local target_dir="${1:-}"
+	local install_type="${1:-}"
 	local completion_file="px"
+	local target_dir
 	
-	if [ -z "$target_dir" ]; then
-		if [ -d "/usr/share/bash-completion/completions" ]; then
-			target_dir="/usr/share/bash-completion/completions"
-		elif [ -d "/etc/bash_completion.d" ]; then
-			target_dir="/etc/bash_completion.d"
-		elif [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/bash-completion/completions" ]; then
-			target_dir="${XDG_CONFIG_HOME:-$HOME/.config}/bash-completion/completions"
-		else
-			target_dir="${XDG_CONFIG_HOME:-$HOME/.config}/bash-completion/completions"
-			mkdir -p "$target_dir" || {
-				error "无法创建 completion 目录: $target_dir"
+	case "$install_type" in
+		--system|system)
+			if [ -d "/usr/share/bash-completion/completions" ]; then
+				target_dir="/usr/share/bash-completion/completions"
+			elif [ -d "/etc/bash_completion.d" ]; then
+				target_dir="/etc/bash_completion.d"
+			else
+				error "系统级 completion 目录不存在"
+				tip "请先安装 bash-completion 包"
 				return 1
-			}
-		fi
-	fi
+			fi
+			;;
+		""|--user|user)
+			target_dir="${XDG_CONFIG_HOME:-$HOME/.config}/bash-completion/completions"
+			if [ ! -d "$target_dir" ]; then
+				mkdir -p "$target_dir" || {
+					error "无法创建 completion 目录: $target_dir"
+					return 1
+				}
+			fi
+			;;
+		*)
+			target_dir="$install_type"
+			;;
+	esac
 	
 	if [ ! -d "$target_dir" ]; then
 		error "目标目录不存在: $target_dir"
@@ -688,10 +703,14 @@ _px_completion() {
 			COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
 			return
 			;;
+		--install-completion)
+			COMPREPLY=($(compgen -W "--system --user" -- "${cur}"))
+			return
+			;;
 	esac
 	
 	if [[ "${cur}" == -* ]]; then
-		COMPREPLY=($(compgen -W "-h --help -l -a -d -D -t -c -v -s -u --install-completion" -- "${cur}"))
+		COMPREPLY=($(compgen -W "-h --help -l -a -d -D -t -c -v -s -u --install-completion --system --user" -- "${cur}"))
 		return
 	fi
 	
@@ -707,10 +726,9 @@ COMPLETION_EOF
 		tip "系统级安装，新终端会自动生效"
 	else
 		tip "用户级安装，请在 ~/.bashrc 中添加："
-		echo "    source $target_file"
+		echo "    [ -f $target_file ] && source $target_file"
+		tip "或立即生效：source $target_file"
 	fi
-	
-	tip "或立即生效：source $target_file"
 }
 
 # ============================================================
@@ -741,7 +759,8 @@ _px_help() {
 	echo "  px -t                   测试所有已保存的代理并显示性能排名"
 	echo "  px -t <名称>            测试指定的代理配置（详细诊断）"
 	echo "  px -t <代理地址>        测试指定代理地址（详细诊断）"
-	echo "  px --install-completion 安装 bash completion 文件"
+	echo "  px --install-completion [--system|--user|<路径>]"
+	echo "                          安装 bash completion（默认用户级）"
 	echo "  px -h, --help           显示此帮助信息"
 	echo ""
 	echo -e "\033[2m配置文件: ${PX_CONFIG_FILE}\033[0m"
@@ -763,7 +782,7 @@ fi
 
 # --install-completion：安装 completion 文件
 if [ "$1" = "--install-completion" ]; then
-	_px_install_completion "$2"
+	_px_install_completion "${2:-}"
 	_px_done $?
 fi
 
