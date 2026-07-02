@@ -407,7 +407,8 @@ do_config() {
             do_config_list
             ;;
         download)
-            do_config_download "$2"
+            shift
+            do_config_download "$@"
             ;;
         select)
             do_config_select "$2"
