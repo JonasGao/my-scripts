@@ -568,6 +568,152 @@ _px_run_with_proxy() {
 }
 
 # ============================================================
+# Bash Completion 函数（需在使用前定义）
+# ============================================================
+_px_completion() {
+	local cur prev words cword
+	_init_completion || return
+	
+	cur="${COMP_WORDS[COMP_CWORD]}"
+	prev="${COMP_WORDS[COMP_CWORD-1]}"
+	
+	case "${prev}" in
+		-a)
+			if [[ ${COMP_CWORD} -eq 2 ]]; then
+				return
+			elif [[ ${COMP_CWORD} -eq 3 ]]; then
+				COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
+				return
+			fi
+			;;
+		-d|-D|-u)
+			if [[ -f "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" ]]; then
+				local proxies
+				proxies=$(cut -d= -f1 "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" 2>/dev/null)
+				COMPREPLY=($(compgen -W "${proxies}" -- "${cur}"))
+			fi
+			return
+			;;
+		-t)
+			if [[ -f "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" ]]; then
+				local proxies
+				proxies=$(cut -d= -f1 "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" 2>/dev/null)
+				COMPREPLY=($(compgen -W "${proxies}" -- "${cur}"))
+				COMPREPLY+=("http://" "https://" "socks5://" "socks5h://")
+			fi
+			return
+			;;
+		-s)
+			COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
+			return
+			;;
+	esac
+	
+	if [[ "${cur}" == -* ]]; then
+		COMPREPLY=($(compgen -W "-h --help -l -a -d -D -t -c -v -s -u --install-completion" -- "${cur}"))
+		return
+	fi
+	
+	COMPREPLY=($(compgen -c -- "${cur}"))
+}
+
+_px_register_completion() {
+	if type complete &>/dev/null && ! complete -p px &>/dev/null; then
+		complete -F _px_completion px
+	fi
+}
+
+_px_install_completion() {
+	local target_dir="${1:-}"
+	local completion_file="px"
+	
+	if [ -z "$target_dir" ]; then
+		if [ -d "/usr/share/bash-completion/completions" ]; then
+			target_dir="/usr/share/bash-completion/completions"
+		elif [ -d "/etc/bash_completion.d" ]; then
+			target_dir="/etc/bash_completion.d"
+		elif [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/bash-completion/completions" ]; then
+			target_dir="${XDG_CONFIG_HOME:-$HOME/.config}/bash-completion/completions"
+		else
+			target_dir="${XDG_CONFIG_HOME:-$HOME/.config}/bash-completion/completions"
+			mkdir -p "$target_dir" || {
+				error "无法创建 completion 目录: $target_dir"
+				return 1
+			}
+		fi
+	fi
+	
+	if [ ! -d "$target_dir" ]; then
+		error "目标目录不存在: $target_dir"
+		return 1
+	fi
+	
+	local target_file="$target_dir/$completion_file"
+	
+	cat >"$target_file" <<'COMPLETION_EOF'
+_px_completion() {
+	local cur prev words cword
+	_init_completion || return
+	
+	cur="${COMP_WORDS[COMP_CWORD]}"
+	prev="${COMP_WORDS[COMP_CWORD-1]}"
+	
+	case "${prev}" in
+		-a)
+			if [[ ${COMP_CWORD} -eq 2 ]]; then
+				return
+			elif [[ ${COMP_CWORD} -eq 3 ]]; then
+				COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
+				return
+			fi
+			;;
+		-d|-D|-u)
+			if [[ -f "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" ]]; then
+				local proxies
+				proxies=$(cut -d= -f1 "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" 2>/dev/null)
+				COMPREPLY=($(compgen -W "${proxies}" -- "${cur}"))
+			fi
+			return
+			;;
+		-t)
+			if [[ -f "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" ]]; then
+				local proxies
+				proxies=$(cut -d= -f1 "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" 2>/dev/null)
+				COMPREPLY=($(compgen -W "${proxies}" -- "${cur}"))
+				COMPREPLY+=("http://" "https://" "socks5://" "socks5h://")
+			fi
+			return
+			;;
+		-s)
+			COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
+			return
+			;;
+	esac
+	
+	if [[ "${cur}" == -* ]]; then
+		COMPREPLY=($(compgen -W "-h --help -l -a -d -D -t -c -v -s -u --install-completion" -- "${cur}"))
+		return
+	fi
+	
+	COMPREPLY=($(compgen -c -- "${cur}"))
+}
+
+complete -F _px_completion px
+COMPLETION_EOF
+	
+	info "Completion 文件已安装到: $target_file"
+	
+	if [[ "$target_dir" == "/usr/share/bash-completion/completions" ]] || [[ "$target_dir" == "/etc/bash_completion.d" ]]; then
+		tip "系统级安装，新终端会自动生效"
+	else
+		tip "用户级安装，请在 ~/.bashrc 中添加："
+		echo "    source $target_file"
+	fi
+	
+	tip "或立即生效：source $target_file"
+}
+
+# ============================================================
 # 帮助信息
 # ============================================================
 _px_help() {
@@ -826,152 +972,6 @@ _px_proxy="${HTTP_PROXY:-$(_px_get_default_proxy)}"
 info "使用代理 $_px_proxy 运行: $*"
 _px_run_with_proxy "$_px_proxy" "$@"
 exit $?
-
-# ============================================================
-# Bash Completion
-# ============================================================
-_px_completion() {
-	local cur prev words cword
-	_init_completion || return
-	
-	cur="${COMP_WORDS[COMP_CWORD]}"
-	prev="${COMP_WORDS[COMP_CWORD-1]}"
-	
-	case "${prev}" in
-		-a)
-			if [[ ${COMP_CWORD} -eq 2 ]]; then
-				return
-			elif [[ ${COMP_CWORD} -eq 3 ]]; then
-				COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
-				return
-			fi
-			;;
-		-d|-D|-u)
-			if [[ -f "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" ]]; then
-				local proxies
-				proxies=$(cut -d= -f1 "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" 2>/dev/null)
-				COMPREPLY=($(compgen -W "${proxies}" -- "${cur}"))
-			fi
-			return
-			;;
-		-t)
-			if [[ -f "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" ]]; then
-				local proxies
-				proxies=$(cut -d= -f1 "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" 2>/dev/null)
-				COMPREPLY=($(compgen -W "${proxies}" -- "${cur}"))
-				COMPREPLY+=("http://" "https://" "socks5://" "socks5h://")
-			fi
-			return
-			;;
-		-s)
-			COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
-			return
-			;;
-	esac
-	
-	if [[ "${cur}" == -* ]]; then
-		COMPREPLY=($(compgen -W "-h --help -l -a -d -D -t -c -v -s -u --install-completion" -- "${cur}"))
-		return
-	fi
-	
-	COMPREPLY=($(compgen -c -- "${cur}"))
-}
-
-_px_register_completion() {
-	if type complete &>/dev/null && ! complete -p px &>/dev/null; then
-		complete -F _px_completion px
-	fi
-}
-
-_px_install_completion() {
-	local target_dir="${1:-}"
-	local completion_file="px"
-	
-	if [ -z "$target_dir" ]; then
-		if [ -d "/usr/share/bash-completion/completions" ]; then
-			target_dir="/usr/share/bash-completion/completions"
-		elif [ -d "/etc/bash_completion.d" ]; then
-			target_dir="/etc/bash_completion.d"
-		elif [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/bash-completion/completions" ]; then
-			target_dir="${XDG_CONFIG_HOME:-$HOME/.config}/bash-completion/completions"
-		else
-			target_dir="${XDG_CONFIG_HOME:-$HOME/.config}/bash-completion/completions"
-			mkdir -p "$target_dir" || {
-				error "无法创建 completion 目录: $target_dir"
-				return 1
-			}
-		fi
-	fi
-	
-	if [ ! -d "$target_dir" ]; then
-		error "目标目录不存在: $target_dir"
-		return 1
-	fi
-	
-	local target_file="$target_dir/$completion_file"
-	
-	cat >"$target_file" <<'COMPLETION_EOF'
-_px_completion() {
-	local cur prev words cword
-	_init_completion || return
-	
-	cur="${COMP_WORDS[COMP_CWORD]}"
-	prev="${COMP_WORDS[COMP_CWORD-1]}"
-	
-	case "${prev}" in
-		-a)
-			if [[ ${COMP_CWORD} -eq 2 ]]; then
-				return
-			elif [[ ${COMP_CWORD} -eq 3 ]]; then
-				COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
-				return
-			fi
-			;;
-		-d|-D|-u)
-			if [[ -f "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" ]]; then
-				local proxies
-				proxies=$(cut -d= -f1 "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" 2>/dev/null)
-				COMPREPLY=($(compgen -W "${proxies}" -- "${cur}"))
-			fi
-			return
-			;;
-		-t)
-			if [[ -f "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" ]]; then
-				local proxies
-				proxies=$(cut -d= -f1 "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" 2>/dev/null)
-				COMPREPLY=($(compgen -W "${proxies}" -- "${cur}"))
-				COMPREPLY+=("http://" "https://" "socks5://" "socks5h://")
-			fi
-			return
-			;;
-		-s)
-			COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
-			return
-			;;
-	esac
-	
-	if [[ "${cur}" == -* ]]; then
-		COMPREPLY=($(compgen -W "-h --help -l -a -d -D -t -c -v -s -u --install-completion" -- "${cur}"))
-		return
-	fi
-	
-	COMPREPLY=($(compgen -c -- "${cur}"))
-}
-
-complete -F _px_completion px
-COMPLETION_EOF
-	
-	info "Completion 文件已安装到: $target_file"
-	
-	if [[ "$target_dir" == "/usr/share/bash-completion/completions" ]] || [[ "$target_dir" == "/etc/bash_completion.d" ]]; then
-		tip "系统级安装，新终端会自动生效"
-	else
-		tip "用户级安装，请在 ~/.bashrc 中添加："
-		echo "    source $target_file"
-	fi
-	
-	tip "或立即生效：source $target_file"
-}
 
 if [ "$_PX_MODE" = "source" ]; then
 	_px_register_completion
