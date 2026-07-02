@@ -201,7 +201,188 @@ _px_set_default() {
 	info "已将 '$name' 设为默认代理"
 }
 
-# 测试代理连通性
+# 测试单个代理连通性（简化版，用于批量测试）
+_px_test_single() {
+	local proxy="$1"
+	local name="$2"
+	local timeout=5
+	
+	# 提取代理类型
+	local proxy_type="http"
+	if [[ "$proxy" =~ ^(https?|socks5h?):// ]]; then
+		proxy_type="${BASH_REMATCH[1]}"
+	fi
+	
+	# 使用单个测试 URL
+	local test_url="https://www.google.com"
+	
+	# 检测 curl
+	local has_curl=0
+	command -v curl >/dev/null 2>&1 && has_curl=1
+	
+	local start_time
+	start_time=$(date +%s%N)
+	local exit_code=1
+	
+	if [ $has_curl -eq 1 ]; then
+		if [ "$proxy_type" = "socks5" ] || [ "$proxy_type" = "socks5h" ]; then
+			curl -x "$proxy" -sS --connect-timeout "$timeout" --max-time "$((timeout * 2))" "$test_url" 2>&1 >/dev/null
+		else
+			curl --proxy "$proxy" -sS --connect-timeout "$timeout" --max-time "$((timeout * 2))" "$test_url" 2>&1 >/dev/null
+		fi
+		exit_code=$?
+	else
+		wget -e "use_proxy=yes" -e "http_proxy=$proxy" -e "https_proxy=$proxy" \
+			--timeout="$timeout" --tries=1 -q --spider "$test_url" 2>&1 >/dev/null
+		exit_code=$?
+	fi
+	
+	local end_time
+	end_time=$(date +%s%N)
+	
+	# 计算毫秒级耗时
+	local duration_ms=$(( (end_time - start_time) / 1000000 ))
+	local duration_sec=$(( duration_ms / 1000 ))
+	
+	if [ $exit_code -eq 0 ]; then
+		echo "success|$duration_ms|$name|$proxy"
+	else
+		echo "fail|$timeout|$name|$proxy"
+	fi
+}
+
+# 测试所有代理并显示性能对比
+_px_test_all_proxies() {
+	info "测试所有已保存的代理配置..."
+	echo ""
+	
+	# 获取所有代理配置
+	if [ ! -f "$PX_CONFIG_FILE" ] || [ ! -s "$PX_CONFIG_FILE" ]; then
+		error "暂无已保存的代理配置"
+		tip "使用 px -a <名称> <地址> 添加代理配置"
+		return 1
+	fi
+	
+	# 读取所有代理并测试
+	local results=()
+	local names=()
+	
+	echo -e "\033[36m正在测试所有代理...\033[0m"
+	echo ""
+	
+	while IFS='=' read -r name url; do
+		[ -z "$name" ] || [ -z "$url" ] && continue
+		
+		echo -n "  测试 $name ... "
+		local result
+		result=$(_px_test_single "$url" "$name")
+		
+		local status
+		status=$(echo "$result" | cut -d'|' -f1)
+		local duration_ms
+		duration_ms=$(echo "$result" | cut -d'|' -f2)
+		
+		if [ "$status" = "success" ]; then
+			echo -e "\033[32m✓ 成功\033[0m (${duration_ms}ms)"
+			results+=("$result")
+			names+=("$name")
+		else
+			echo -e "\033[31m✗ 失败\033[0m"
+			results+=("$result")
+			names+=("$name")
+		fi
+	done <"$PX_CONFIG_FILE"
+	
+	echo ""
+	
+	# 统计并排序显示结果
+	local success_count=0
+	local fail_count=0
+	
+	for result in "${results[@]}"; do
+		local status
+		status=$(echo "$result" | cut -d'|' -f1)
+		if [ "$status" = "success" ]; then
+			((success_count++))
+		else
+			((fail_count++))
+		fi
+	done
+	
+	if [ $success_count -eq 0 ]; then
+		error "所有代理测试失败 ($fail_count 个)"
+		return 1
+	fi
+	
+	# 显示性能排序
+	echo -e "\033[1;36m代理性能排名（按响应时间）:\033[0m"
+	echo ""
+	
+	# 按耗时排序成功的代理
+	local sorted_success=()
+	for result in "${results[@]}"; do
+		local status
+		status=$(echo "$result" | cut -d'|' -f1)
+		if [ "$status" = "success" ]; then
+			sorted_success+=("$result")
+		fi
+	done
+	
+	# 按耗时排序（升序）
+	IFS=$'\n' sorted_success=($(sort -t'|' -k2 -n <<<"${sorted_success[*]}"))
+	unset IFS
+	
+	local rank=1
+	for result in "${sorted_success[@]}"; do
+		local duration_ms
+		duration_ms=$(echo "$result" | cut -d'|' -f2)
+		local name
+		name=$(echo "$result" | cut -d'|' -f3)
+		local url
+		url=$(echo "$result" | cut -d'|' -f4)
+		
+		# 标记默认代理
+		local default_name
+		default_name=$(_px_get_default_name)
+		local mark=""
+		[ "$name" = "$default_name" ] && mark=" (默认)"
+		
+		local duration_sec=$((duration_ms / 1000))
+		local duration_remain=$((duration_ms % 1000))
+		
+		printf "  #%d \033[33m%-15s\033[0m %5d.%03ds%s\n" "$rank" "$name" "$duration_sec" "$duration_remain" "$mark"
+		echo -e "      \033[2m$url\033[0m"
+		((rank++))
+	done
+	
+	# 显示失败的代理
+	if [ $fail_count -gt 0 ]; then
+		echo ""
+		echo -e "\033[31m失败的代理 ($fail_count):\033[0m"
+		for result in "${results[@]}"; do
+			local status
+			status=$(echo "$result" | cut -d'|' -f1)
+			if [ "$status" = "fail" ]; then
+				local name
+				name=$(echo "$result" | cut -d'|' -f3)
+				local url
+				url=$(echo "$result" | cut -d'|' -f4)
+				printf "  \033[31m%-15s\033[0m %s\n" "$name" "$url"
+			fi
+		done
+	fi
+	
+	echo ""
+	info "测试结果: \033[32m成功 $success_count\033[0m / \033[31m失败 $fail_count\033[0m"
+	
+	if [ $success_count -gt 0 ]; then
+		tip "建议使用最快的代理: $(echo "${sorted_success[0]}" | cut -d'|' -f3)"
+	fi
+	
+	return 0
+}
+
+# 测试代理连通性（详细版，用于单个代理）
 _px_test_proxy() {
 	local proxy="$1"
 	local name="${2:-自定义}"
@@ -411,7 +592,9 @@ _px_help() {
 	echo "  px -D [<名称>]          设置/清除默认代理配置"
 	echo ""
 	echo -e "\033[1m其他\033[0m"
-	echo "  px -t [<名称>]          测试代理连通性（默认测试当前/默认代理）"
+	echo "  px -t                   测试所有已保存的代理并显示性能排名"
+	echo "  px -t <名称>            测试指定的代理配置（详细诊断）"
+	echo "  px -t <代理地址>        测试指定代理地址（详细诊断）"
 	echo "  px -h, --help           显示此帮助信息"
 	echo ""
 	echo -e "\033[2m配置文件: ${PX_CONFIG_FILE}\033[0m"
@@ -487,14 +670,9 @@ if [ "$1" = "-t" ]; then
 	_px_test_proxy_name=""
 	
 	if [ $# -eq 1 ]; then
-		# 无参数：测试当前/默认代理
-		if [ -n "${HTTP_PROXY:-}" ]; then
-			_px_test_proxy_url="$HTTP_PROXY"
-			_px_test_proxy_name="当前环境变量"
-		else
-			_px_test_proxy_url=$(_px_get_default_proxy)
-			_px_test_proxy_name="默认代理"
-		fi
+		# 无参数：测试所有已保存的代理
+		_px_test_all_proxies
+		_px_done $?
 	elif [ $# -eq 2 ]; then
 		# 一个参数：可能是代理名称或代理地址
 		_px_arg="$2"
@@ -508,16 +686,16 @@ if [ "$1" = "-t" ]; then
 			_px_test_proxy_url=$(_px_get_profile "$_px_arg") || _px_done 1
 			_px_test_proxy_name="$_px_arg"
 		fi
+		
+		_px_test_proxy "$_px_test_proxy_url" "$_px_test_proxy_name"
+		_px_done $?
 	else
 		error "用法: px -t [<名称或地址>]"
-		tip "  px -t              测试当前/默认代理"
+		tip "  px -t              测试所有已保存的代理并显示性能排名"
 		tip "  px -t <名称>        测试已保存的代理配置"
 		tip "  px -t <代理地址>    测试指定代理地址"
 		_px_done 1
 	fi
-	
-	_px_test_proxy "$_px_test_proxy_url" "$_px_test_proxy_name"
-	_px_done $?
 fi
 
 # ============================================================
@@ -641,3 +819,63 @@ _px_proxy="${HTTP_PROXY:-$(_px_get_default_proxy)}"
 info "使用代理 $_px_proxy 运行: $*"
 _px_run_with_proxy "$_px_proxy" "$@"
 exit $?
+
+# ============================================================
+# Bash Completion
+# ============================================================
+_px_completion() {
+	local cur prev words cword
+	_init_completion || return
+	
+	cur="${COMP_WORDS[COMP_CWORD]}"
+	prev="${COMP_WORDS[COMP_CWORD-1]}"
+	
+	case "${prev}" in
+		-a)
+			if [[ ${COMP_CWORD} -eq 2 ]]; then
+				return
+			elif [[ ${COMP_CWORD} -eq 3 ]]; then
+				COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
+				return
+			fi
+			;;
+		-d|-D|-u)
+			if [[ -f "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" ]]; then
+				local proxies
+				proxies=$(cut -d= -f1 "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" 2>/dev/null)
+				COMPREPLY=($(compgen -W "${proxies}" -- "${cur}"))
+			fi
+			return
+			;;
+		-t)
+			if [[ -f "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" ]]; then
+				local proxies
+				proxies=$(cut -d= -f1 "${PX_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/px/proxies}" 2>/dev/null)
+				COMPREPLY=($(compgen -W "${proxies}" -- "${cur}"))
+				COMPREPLY+=("http://" "https://" "socks5://" "socks5h://")
+			fi
+			return
+			;;
+		-s)
+			COMPREPLY=($(compgen -W "http:// https:// socks5:// socks5h://" -- "${cur}"))
+			return
+			;;
+	esac
+	
+	if [[ "${cur}" == -* ]]; then
+		COMPREPLY=($(compgen -W "-h --help -l -a -d -D -t -c -v -s -u" -- "${cur}"))
+		return
+	fi
+	
+	COMPREPLY=($(compgen -c -- "${cur}"))
+}
+
+_px_register_completion() {
+	if type complete &>/dev/null && ! complete -p px &>/dev/null; then
+		complete -F _px_completion px
+	fi
+}
+
+if [ "$_PX_MODE" = "source" ]; then
+	_px_register_completion
+fi
