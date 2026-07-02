@@ -645,7 +645,7 @@ _px_install_completion() {
 			fi
 			;;
 		""|--user|user)
-			target_dir="${XDG_CONFIG_HOME:-$HOME/.config}/bash-completion/completions"
+			target_dir="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
 			if [ ! -d "$target_dir" ]; then
 				mkdir -p "$target_dir" || {
 					error "无法创建 completion 目录: $target_dir"
