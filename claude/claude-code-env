@@ -6,6 +6,7 @@ ME="$(basename "$0")"
 CONFIG_DIR="${CLAUDE_CODE_ENV_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-code-env}"
 PROFILES_DIR="$CONFIG_DIR/profiles"
 DEFAULT_FILE="$CONFIG_DIR/default"
+DEFAULT_LINK="$CONFIG_DIR/default.env"
 CLAUDE_BIN="${CLAUDE_CODE_BIN:-claude}"
 
 usage() {
@@ -17,6 +18,7 @@ Usage:
   $ME edit <profile>
   $ME default [profile]
   $ME rm <profile>
+  $ME init
   $ME path [profile]
 
 Commands:
@@ -28,6 +30,8 @@ Commands:
   edit         Edit an existing profile.
   default      Show or set the default profile.
   rm           Remove a profile. If it is the default, the default setting is cleared.
+  init         Add a source line to your shell rc file so the default profile is
+               loaded automatically when running claude directly.
   path         Print the config directory or a profile file path.
 
 Environment:
@@ -45,6 +49,7 @@ Profile format:
 Examples:
   $ME add work
   $ME default work
+  $ME init
   $ME run -- --model opus
   $ME run --no-skip-permissions
   $ME run personal -- --dangerously-skip-permissions
@@ -78,6 +83,15 @@ profile_path() {
 read_default_profile() {
 	if [[ -f "$DEFAULT_FILE" ]]; then
 		sed -n '1p' "$DEFAULT_FILE"
+	fi
+}
+
+update_default_link() {
+	local profile="$1"
+	if [[ -n "$profile" ]]; then
+		ln -sf "$PROFILES_DIR/$profile.env" "$DEFAULT_LINK"
+	else
+		rm -f "$DEFAULT_LINK"
 	fi
 }
 
@@ -210,6 +224,7 @@ cmd_default() {
 	require_profile "$1" >/dev/null
 	printf "%s\n" "$1" >"$DEFAULT_FILE"
 	chmod 600 "$DEFAULT_FILE" 2>/dev/null || true
+	update_default_link "$1"
 	echo "Default profile: $1"
 }
 
@@ -224,8 +239,51 @@ cmd_rm() {
 
 	if [[ "$(read_default_profile)" == "$profile" && ! -f "$path" ]]; then
 		rm -f "$DEFAULT_FILE"
+		update_default_link ""
 		echo "Default profile cleared"
 	fi
+}
+
+cmd_init() {
+	ensure_config_dir
+
+	local shell_name rc_file
+	shell_name="$(basename "${SHELL:-/bin/bash}")"
+
+	case "$shell_name" in
+	zsh)
+		rc_file="$HOME/.zshrc"
+		;;
+	bash)
+		if [[ -f "$HOME/.bashrc" ]]; then
+			rc_file="$HOME/.bashrc"
+		elif [[ -f "$HOME/.bash_profile" ]]; then
+			rc_file="$HOME/.bash_profile"
+		else
+			rc_file="$HOME/.bashrc"
+		fi
+		;;
+	*)
+		rc_file="$HOME/.${shell_name}rc"
+		;;
+	esac
+
+	local marker="# Claude Code default profile"
+	local source_line="[ -f \"$DEFAULT_LINK\" ] && source \"$DEFAULT_LINK\""
+
+	if [[ -f "$rc_file" ]] && grep -qF "$DEFAULT_LINK" "$rc_file" 2>/dev/null; then
+		echo "Already configured in $rc_file"
+		return
+	fi
+
+	{
+		echo ""
+		echo "$marker"
+		echo "$source_line"
+	} >>"$rc_file"
+
+	echo "Added source line to $rc_file"
+	echo "Restart your shell or run: source $rc_file"
 }
 
 cmd_path() {
@@ -315,6 +373,9 @@ main() {
 		;;
 	rm | remove | delete)
 		cmd_rm "$@"
+		;;
+	init)
+		cmd_init "$@"
 		;;
 	path)
 		cmd_path "$@"

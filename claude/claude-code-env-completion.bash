@@ -7,7 +7,8 @@ _cce_profiles_dir() {
 }
 
 _cce_list_profiles() {
-	local profiles_dir="$(_cce_profiles_dir)"
+	local profiles_dir
+	profiles_dir="$(_cce_profiles_dir)"
 	shopt -s nullglob
 	local files=("$profiles_dir"/*.env)
 	shopt -u nullglob
@@ -23,11 +24,12 @@ _cce_complete() {
 	local cur prev words cword
 	_init_completion || return
 
-	local profiles_dir="$(_cce_profiles_dir)"
+	local profiles_dir
+	profiles_dir="$(_cce_profiles_dir)"
 
 	# First word: complete commands
 	if [[ $cword -eq 1 ]]; then
-		COMPREPLY=($(compgen -W 'run list ls add new edit default set-default rm remove delete path help --help -h' -- "$cur"))
+		mapfile -t COMPREPLY < <(compgen -W 'run list ls add new edit default set-default rm remove delete init path help --help -h' -- "$cur")
 		return
 	fi
 
@@ -37,46 +39,46 @@ _cce_complete() {
 	run)
 		# After 'run': complete profile or flags
 		case "$prev" in
-		-n|--no-skip-permissions)
-			COMPREPLY=($(compgen -W '--' -- "$cur"))
+		-n | --no-skip-permissions)
+			mapfile -t COMPREPLY < <(compgen -W '--' -- "$cur")
 			return
 			;;
 		run)
 			# First arg after 'run': profile or flag
-			COMPREPLY=($(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions --" -- "$cur"))
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions --" -- "$cur")
 			return
 			;;
 		*)
 			# Profile already given, complete flags
 			if [[ -f "$profiles_dir/${prev}.env" ]]; then
-				COMPREPLY=($(compgen -W '-n --no-skip-permissions --' -- "$cur"))
+				mapfile -t COMPREPLY < <(compgen -W '-n --no-skip-permissions --' -- "$cur")
 				return
 			fi
 			# Complete remaining profiles or flags
-			COMPREPLY=($(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions --" -- "$cur"))
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions --" -- "$cur")
 			return
 			;;
 		esac
 		;;
-	list|ls)
+	list | ls)
 		# 'list' takes no args
 		COMPREPLY=()
 		return
 		;;
-	add|new)
+	add | new)
 		# 'add <profile> [--no-edit] [--force]'
 		case "$prev" in
-		add|new)
-			COMPREPLY=()  # New profile name, no completion
+		add | new)
+			COMPREPLY=() # New profile name, no completion
 			return
 			;;
-		--no-edit|--force|-h|--help)
-			COMPREPLY=($(compgen -W '--no-edit --force -h --help' -- "$cur"))
+		--no-edit | --force | -h | --help)
+			mapfile -t COMPREPLY < <(compgen -W '--no-edit --force -h --help' -- "$cur")
 			return
 			;;
 		*)
 			# After profile name
-			COMPREPLY=($(compgen -W '--no-edit --force -h --help' -- "$cur"))
+			mapfile -t COMPREPLY < <(compgen -W '--no-edit --force -h --help' -- "$cur")
 			return
 			;;
 		esac
@@ -85,32 +87,37 @@ _cce_complete() {
 		# 'edit <profile>'
 		case "$prev" in
 		edit)
-			COMPREPLY=($(compgen -W "$(_cce_list_profiles)" -- "$cur"))
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles)" -- "$cur")
 			return
 			;;
 		esac
 		COMPREPLY=()
 		return
 		;;
-	default|set-default)
+	default | set-default)
 		# 'default [profile]'
 		case "$prev" in
-		default|set-default)
-			COMPREPLY=($(compgen -W "$(_cce_list_profiles)" -- "$cur"))
+		default | set-default)
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles)" -- "$cur")
 			return
 			;;
 		esac
 		COMPREPLY=()
 		return
 		;;
-	rm|remove|delete)
+	rm | remove | delete)
 		# 'rm <profile>'
 		case "$prev" in
-		rm|remove|delete)
-			COMPREPLY=($(compgen -W "$(_cce_list_profiles)" -- "$cur"))
+		rm | remove | delete)
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles)" -- "$cur")
 			return
 			;;
 		esac
+		COMPREPLY=()
+		return
+		;;
+	init)
+		# 'init' takes no args
 		COMPREPLY=()
 		return
 		;;
@@ -118,20 +125,20 @@ _cce_complete() {
 		# 'path [profile]'
 		case "$prev" in
 		path)
-			COMPREPLY=($(compgen -W "$(_cce_list_profiles)" -- "$cur"))
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles)" -- "$cur")
 			return
 			;;
 		esac
 		COMPREPLY=()
 		return
 		;;
-	help|--help|-h)
+	help | --help | -h)
 		COMPREPLY=()
 		return
 		;;
 	*)
 		# Unknown command - treat as profile for run
-		COMPREPLY=($(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions --" -- "$cur"))
+		mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions --" -- "$cur")
 		return
 		;;
 	esac
