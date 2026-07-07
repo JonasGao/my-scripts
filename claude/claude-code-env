@@ -269,7 +269,7 @@ cmd_init() {
 	esac
 
 	local marker="# Claude Code default profile"
-	local source_line="[ -f \"$DEFAULT_LINK\" ] && source \"$DEFAULT_LINK\""
+	local source_line="[ -f \"$DEFAULT_LINK\" ] && { set -a; source \"$DEFAULT_LINK\"; set +a; }"
 
 	if [[ -f "$rc_file" ]] && grep -qF "$DEFAULT_LINK" "$rc_file" 2>/dev/null; then
 		echo "Already configured in $rc_file"
