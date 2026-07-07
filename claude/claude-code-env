@@ -335,6 +335,15 @@ cmd_run() {
 	local path
 	path="$(require_profile "$profile")"
 
+	# Clear claude-related env vars to avoid cross-profile pollution
+	while IFS='=' read -r key _; do
+		case "$key" in
+		ANTHROPIC_* | CLAUDE_CODE_*)
+			unset "$key"
+			;;
+		esac
+	done < <(env)
+
 	set +u
 	set -a
 	# shellcheck disable=SC1090
