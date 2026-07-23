@@ -29,7 +29,7 @@ _cce_complete() {
 
 	# First word: complete commands
 	if [[ $cword -eq 1 ]]; then
-		mapfile -t COMPREPLY < <(compgen -W 'run list ls add new edit default set-default rm remove delete init path help --help -h' -- "$cur")
+		mapfile -t COMPREPLY < <(compgen -W 'run list ls add new edit default set-default rm remove delete cp copy rename mv init path help --help -h' -- "$cur")
 		return
 	fi
 
@@ -115,6 +115,70 @@ _cce_complete() {
 		esac
 		COMPREPLY=()
 		return
+		;;
+	cp | copy)
+		# 'cp <source> <dest> [--no-edit] [--force]'
+		case "$prev" in
+		cp | copy)
+			# First arg: source profile
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles)" -- "$cur")
+			return
+			;;
+		--no-edit | --force | -h | --help)
+			COMPREPLY=()
+			return
+			;;
+		*)
+			# Check if we already have 2 profile args
+			local profile_count=0
+			for ((i=2; i<cword; i++)); do
+				case "${words[i]}" in
+				--*|-*) ;;
+				*) ((profile_count++)) ;;
+				esac
+			done
+			if [[ $profile_count -eq 0 ]]; then
+				# Second arg: dest profile (no completion)
+				COMPREPLY=()
+			else
+				# After both profiles: flags
+				mapfile -t COMPREPLY < <(compgen -W '--no-edit --force -h --help' -- "$cur")
+			fi
+			return
+			;;
+		esac
+		;;
+	rename | mv)
+		# 'rename <old> <new> [--force]'
+		case "$prev" in
+		rename | mv)
+			# First arg: old profile name
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles)" -- "$cur")
+			return
+			;;
+		--force | -h | --help)
+			COMPREPLY=()
+			return
+			;;
+		*)
+			# Check if we already have 2 profile args
+			local profile_count=0
+			for ((i=2; i<cword; i++)); do
+				case "${words[i]}" in
+				--*|-*) ;;
+				*) ((profile_count++)) ;;
+				esac
+			done
+			if [[ $profile_count -eq 0 ]]; then
+				# Second arg: new profile name (no completion)
+				COMPREPLY=()
+			else
+				# After both profiles: flags
+				mapfile -t COMPREPLY < <(compgen -W '--force -h --help' -- "$cur")
+			fi
+			return
+			;;
+		esac
 		;;
 	init)
 		# 'init' takes no args

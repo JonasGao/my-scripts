@@ -19,6 +19,7 @@ Usage:
   $ME default [profile]
   $ME rm <profile>
   $ME cp <source> <dest>
+  $ME rename <old> <new>
   $ME init
   $ME path [profile]
 
@@ -31,6 +32,7 @@ Commands:
   edit         Edit an existing profile.
   default      Show or set the default profile.
   cp           Copy an existing profile to a new one.
+  rename       Rename a profile. Updates the default setting if needed.
   rm           Remove a profile. If it is the default, the default setting is cleared.
   init         Add a source line to your shell rc file so the default profile is
                loaded automatically when running claude directly.
@@ -293,6 +295,53 @@ cmd_cp() {
 	fi
 }
 
+cmd_rename() {
+	ensure_config_dir
+	[[ $# -ge 2 ]] || die "rename requires old and new profile names"
+
+	local old_name="$1"
+	local new_name="$2"
+	shift 2
+
+	local force=0
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--force)
+			force=1
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		*)
+			die "unknown rename option: $1"
+			;;
+		esac
+		shift
+	done
+
+	local old_path new_path
+	old_path="$(require_profile "$old_name")"
+	validate_profile_name "$new_name"
+	new_path="$(profile_path "$new_name")"
+
+	if [[ -e "$new_path" && "$force" -ne 1 ]]; then
+		die "profile already exists: $new_name"
+	fi
+
+	mv "$old_path" "$new_path"
+	echo "Renamed: $old_name -> $new_name"
+
+	local default_profile
+	default_profile="$(read_default_profile)"
+	if [[ "$default_profile" == "$old_name" ]]; then
+		printf "%s\n" "$new_name" >"$DEFAULT_FILE"
+		chmod 600 "$DEFAULT_FILE" 2>/dev/null || true
+		update_default_link "$new_name"
+		echo "Default profile updated: $new_name"
+	fi
+}
+
 cmd_init() {
 	ensure_config_dir
 
@@ -434,6 +483,9 @@ main() {
 		;;
 	cp | copy)
 		cmd_cp "$@"
+		;;
+	rename | mv)
+		cmd_rename "$@"
 		;;
 	init)
 		cmd_init "$@"
