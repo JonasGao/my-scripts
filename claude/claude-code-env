@@ -18,6 +18,7 @@ Usage:
   $ME edit <profile>
   $ME default [profile]
   $ME rm <profile>
+  $ME cp <source> <dest>
   $ME init
   $ME path [profile]
 
@@ -29,6 +30,7 @@ Commands:
   add          Create a profile file and open it in \$EDITOR unless --no-edit is used.
   edit         Edit an existing profile.
   default      Show or set the default profile.
+  cp           Copy an existing profile to a new one.
   rm           Remove a profile. If it is the default, the default setting is cleared.
   init         Add a source line to your shell rc file so the default profile is
                loaded automatically when running claude directly.
@@ -244,6 +246,53 @@ cmd_rm() {
 	fi
 }
 
+cmd_cp() {
+	ensure_config_dir
+	[[ $# -ge 2 ]] || die "cp requires source and destination profile names"
+
+	local src="$1"
+	local dst="$2"
+	shift 2
+
+	local edit_after=1
+	local force=0
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--no-edit)
+			edit_after=0
+			;;
+		--force)
+			force=1
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		*)
+			die "unknown cp option: $1"
+			;;
+		esac
+		shift
+	done
+
+	local src_path dst_path
+	src_path="$(require_profile "$src")"
+	validate_profile_name "$dst"
+	dst_path="$(profile_path "$dst")"
+
+	if [[ -e "$dst_path" && "$force" -ne 1 ]]; then
+		die "profile already exists: $dst"
+	fi
+
+	cp "$src_path" "$dst_path"
+	chmod 600 "$dst_path" 2>/dev/null || true
+	echo "Copied: $src -> $dst"
+
+	if [[ "$edit_after" -eq 1 ]]; then
+		open_editor "$dst_path"
+	fi
+}
+
 cmd_init() {
 	ensure_config_dir
 
@@ -382,6 +431,9 @@ main() {
 		;;
 	rm | remove | delete)
 		cmd_rm "$@"
+		;;
+	cp | copy)
+		cmd_cp "$@"
 		;;
 	init)
 		cmd_init "$@"
