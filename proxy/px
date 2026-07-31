@@ -28,6 +28,25 @@ info() { echo -e "\033[32m[INFO] $1\033[0m"; }
 error() { echo -e "\033[31m[ERROR] $1\033[0m"; }
 tip() { echo -e "\033[36m[TIP] $1\033[0m"; }
 
+# 打印 "使用代理 X 运行: CMD" 日志；若代理主机是域名则追加 DNS 解析 IP
+_px_log_run_with_proxy() {
+	local proxy="$1"
+	shift
+	local host=""
+	if [[ "$proxy" =~ ^[a-z]+://([^/:]+) ]]; then
+		host="${BASH_REMATCH[1]}"
+	fi
+	if [ -n "$host" ] && ! [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		local ips
+		ips=$(getent hosts "$host" 2>/dev/null | awk '{print $1}' | sort -u | paste -sd ',' -)
+		if [ -n "$ips" ]; then
+			info "使用代理 $proxy ($host -> $ips) 运行: $*"
+			return
+		fi
+	fi
+	info "使用代理 $proxy 运行: $*"
+}
+
 # ============================================================
 # 检测是否被 source（当前 shell 执行）
 # ============================================================
@@ -966,7 +985,7 @@ if [ "$1" = "-s" ]; then
 		exit 1
 	fi
 	shift 2
-	info "使用代理 $_px_proxy_addr 运行: $*"
+	_px_log_run_with_proxy "$_px_proxy_addr" "$@"
 	_px_run_with_proxy "$_px_proxy_addr" "$@"
 	exit $?
 fi
@@ -980,7 +999,7 @@ if [ "$1" = "-u" ]; then
 	_px_name="$2"
 	_px_url=$(_px_get_profile "$_px_name") || exit 1
 	shift 2
-	info "使用代理 $_px_name ($_px_url) 运行: $*"
+	_px_log_run_with_proxy "$_px_url" "$@"
 	_px_run_with_proxy "$_px_url" "$@"
 	_px_exit_code=$?
 	unset _px_name _px_url
@@ -988,7 +1007,7 @@ if [ "$1" = "-u" ]; then
 fi
 
 _px_proxy="${HTTP_PROXY:-$(_px_get_default_proxy)}"
-info "使用代理 $_px_proxy 运行: $*"
+_px_log_run_with_proxy "$_px_proxy" "$@"
 _px_run_with_proxy "$_px_proxy" "$@"
 exit $?
 
