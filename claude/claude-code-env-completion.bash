@@ -208,4 +208,4 @@ _cce_complete() {
 	esac
 }
 
-complete -F _cce_complete cc
+complete -F _cce_complete ccx
