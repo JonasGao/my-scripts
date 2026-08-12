@@ -29,6 +29,7 @@ error() { echo -e "\033[31m[ERROR] $1\033[0m"; }
 tip() { echo -e "\033[36m[TIP] $1\033[0m"; }
 
 # 打印 "使用代理 X 运行: CMD" 日志；若代理主机是域名则追加 DNS 解析 IP
+# 输出到 stderr 以支持管道操作（如 px curl xxx | bash）
 _px_log_run_with_proxy() {
 	local proxy="$1"
 	shift
@@ -40,11 +41,11 @@ _px_log_run_with_proxy() {
 		local ips
 		ips=$(getent hosts "$host" 2>/dev/null | awk '{print $1}' | sort -u | paste -sd ',' -)
 		if [ -n "$ips" ]; then
-			info "使用代理 $proxy ($host -> $ips) 运行: $*"
+			echo -e "\033[32m[INFO] 使用代理 $proxy ($host -> $ips) 运行: $*\033[0m" >&2
 			return
 		fi
 	fi
-	info "使用代理 $proxy 运行: $*"
+	echo -e "\033[32m[INFO] 使用代理 $proxy 运行: $*\033[0m" >&2
 }
 
 # ============================================================
