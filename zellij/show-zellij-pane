@@ -1,28 +1,50 @@
 #!/bin/bash
 # Show detailed information for a specific zellij pane
-# Usage: show-zellij-pane [pane_id]
-# Example: show-zellij-pane          # show current pane (auto-detect via env)
-#          show-zellij-pane 484
-#          show-zellij-pane terminal_484
+# Usage: show-zellij-pane [options] [pane_id]
+# Options:
+#   -a, --all    Show all details (state, geometry, appearance)
+#   --json       Output raw JSON only
+# Examples:
+#   show-zellij-pane              # current pane, compact output
+#   show-zellij-pane 484          # specific pane, compact output
+#   show-zellij-pane -a           # full detail
+#   show-zellij-pane --json       # raw JSON
 
-if [ -z "$1" ]; then
+ALL_MODE=False
+JSON_MODE=False
+PANE_ID=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -a|--all)
+            ALL_MODE=true
+            shift
+            ;;
+        --json)
+            JSON_MODE=true
+            shift
+            ;;
+        *)
+            PANE_ID="$1"
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$PANE_ID" ]; then
     if [ -n "$ZELLIJ_PANE_ID" ]; then
-        echo "[Auto-detected current pane: $ZELLIJ_PANE_ID]"
-        echo
         PANE_ID="$ZELLIJ_PANE_ID"
     else
-        echo "Usage: show-zellij-pane [pane_id]"
+        echo "Usage: show-zellij-pane [options] [pane_id]"
         echo
-        echo "If inside a zellij session, run without argument to show current pane."
-        echo "Otherwise, provide a pane ID:"
-        echo "  show-zellij-pane 484"
-        echo "  show-zellij-pane terminal_484"
+        echo "Options:"
+        echo "  -a, --all    Show all details (state, geometry, appearance)"
+        echo "  --json       Output raw JSON only"
         echo
+        echo "If inside a zellij session, run without pane_id to show current pane."
         echo "Zellij environment variables not found (not in a zellij session?)"
         exit 1
     fi
-else
-    PANE_ID="$1"
 fi
 
 # Remove "terminal_" prefix if present
@@ -34,6 +56,8 @@ import subprocess
 import sys
 
 pane_id = '$PANE_NUM'
+all_mode = '$ALL_MODE' == 'true'
+json_mode = '$JSON_MODE' == 'true'
 
 # Get all panes with full details
 result = subprocess.run(['zellij', 'action', 'list-panes', '--json', '-a'], capture_output=True, text=True)
@@ -58,14 +82,21 @@ if not found:
             print(f\"  terminal_{p['id']}: {p.get('title', '')[:50]}\", file=sys.stderr)
     sys.exit(1)
 
-# Display formatted output
-print(f\"Pane ID: terminal_{found['id']}\")
+# JSON mode: just dump and exit
+if json_mode:
+    print(json.dumps(found, indent=2, ensure_ascii=False))
+    sys.exit(0)
+
+# Compact default output
+print(f\"Pane: terminal_{found['id']}  Tab: {found.get('tab_name', '')}\")
 print(f\"Title: {found.get('title', '')}\")
-print(f\"Tab: {found.get('tab_name', '')} (ID: {found.get('tab_id', '')})\")
-print()
-print('Command & Directory:')
-print(f\"  Command: {found.get('pane_command', '(none)')}\")
-print(f\"  CWD: {found.get('pane_cwd', '(none)')}\")
+print(f\"Command: {found.get('pane_command', '(none)')}\")
+print(f\"CWD: {found.get('pane_cwd', '(none)')}\")
+
+if not all_mode:
+    sys.exit(0)
+
+# Extended output for -a/--all
 print()
 print('State:')
 print(f\"  Focused: {found.get('is_focused', False)}\")
@@ -84,7 +115,4 @@ print()
 print('Appearance:')
 print(f\"  Default FG: {found.get('default_fg', '(default)')}\")
 print(f\"  Default BG: {found.get('default_bg', '(default)')}\")
-print()
-print('Raw JSON:')
-print(json.dumps(found, indent=2, ensure_ascii=False))
 "
