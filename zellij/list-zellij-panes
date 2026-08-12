@@ -1,0 +1,114 @@
+#!/bin/bash
+# List zellij panes grouped by tab with pane IDs in Unicode table format
+# Auto-fits content within terminal width (handles CJK characters)
+
+python3 -c "
+import json
+import subprocess
+import shutil
+
+def display_width(s):
+    '''Calculate display width, CJK chars count as 2'''
+    width = 0
+    for c in s:
+        if '一' <= c <= '鿿' or '　' <= c <= '〿':
+            width += 2  # CJK
+        elif c.isascii():
+            width += 1
+        else:
+            width += 1  # Other unicode, usually 1
+    return width
+
+def truncate(s, max_width):
+    '''Truncate string to fit display width'''
+    if display_width(s) <= max_width:
+        return s
+    result = ''
+    w = 0
+    for c in s:
+        cw = 2 if '一' <= c <= '鿿' else 1
+        if w + cw > max_width - 3:
+            return result + '...'
+        result += c
+        w += cw
+    return result
+
+term_width = shutil.get_terminal_size((120, 24)).columns
+
+# Get panes with all fields (including command info)
+panes_result = subprocess.run(['zellij', 'action', 'list-panes', '--json', '-a'], capture_output=True, text=True)
+panes_data = json.loads(panes_result.stdout) if panes_result.stdout else []
+
+# Get tabs
+tabs_result = subprocess.run(['zellij', 'action', 'list-tabs', '--json'], capture_output=True, text=True)
+tabs_data = json.loads(tabs_result.stdout) if tabs_result.stdout else []
+
+# Map tab_id to tab name
+tab_names = {t['tab_id']: t['name'] for t in tabs_data}
+
+# Group panes by tab_id
+tabs = {}
+for pane in panes_data:
+    tab_id = pane.get('tab_id', 0)
+    pane_id = pane.get('id', 0)
+    title = pane.get('title', '')
+    pane_command = pane.get('pane_command', '') or ''
+    pane_cwd = pane.get('pane_cwd', '') or ''
+
+    # Determine pane id string
+    if pane_id == 0 and ('zellij' in title or 'tab-bar' in title or 'status-bar' in title):
+        pid_str = 'plugin_0'
+    else:
+        pid_str = f'terminal_{pane_id}'
+
+    if tab_id not in tabs:
+        tabs[tab_id] = []
+    tabs[tab_id].append((pid_str, title, pane_command, pane_cwd))
+
+# Output
+first = True
+for tab_id in sorted(tabs.keys()):
+    panes = tabs[tab_id]
+    tab_name = tab_names.get(tab_id, f'Tab #{tab_id}')
+
+    # Calculate column widths
+    id_w = max(display_width(p[0]) for p in panes)
+    id_w = max(id_w, 7)  # 'PANE_ID' header
+
+    # Calculate command column width
+    cmd_w = max(display_width(p[2]) for p in panes) if panes else 0
+    cmd_w = max(cmd_w, 7)  # 'COMMAND' header
+    cmd_w = min(cmd_w, 40)  # Max width for command column
+
+    # Calculate cwd column width
+    cwd_w = max(display_width(p[3]) for p in panes) if panes else 0
+    cwd_w = max(cwd_w, 3)  # 'CWD' header
+    cwd_w = min(cwd_w, 30)  # Max width for cwd column
+
+    # Max available width for title
+    border_chars = 9  # │ and spaces for 4 columns
+    available_title_w = term_width - id_w - cmd_w - cwd_w - border_chars - 8
+    title_w = min(max(display_width(p[1]) for p in panes), available_title_w)
+    title_w = max(title_w, 5)  # 'TITLE' header
+
+    if not first:
+        print()
+    first = False
+
+    print(f'{tab_name}')
+    print('┌' + '─' * (id_w + 2) + '┬' + '─' * (title_w + 2) + '┬' + '─' * (cmd_w + 2) + '┬' + '─' * (cwd_w + 2) + '┐')
+    print('│ PANE_ID' + ' ' * (id_w - 7) + ' │ TITLE' + ' ' * (title_w - 5) + ' │ COMMAND' + ' ' * (cmd_w - 7) + ' │ CWD' + ' ' * (cwd_w - 3) + ' │')
+    print('├' + '─' * (id_w + 2) + '┼' + '─' * (title_w + 2) + '┼' + '─' * (cmd_w + 2) + '┼' + '─' * (cwd_w + 2) + '┤')
+
+    for pid, title, pane_command, pane_cwd in panes:
+        display_title = truncate(title, title_w)
+        display_cmd = truncate(pane_command, cmd_w)
+        display_cwd = truncate(pane_cwd, cwd_w)
+        pad_id = ' ' * (id_w - display_width(pid))
+        pad_title = ' ' * (title_w - display_width(display_title))
+        pad_cmd = ' ' * (cmd_w - display_width(display_cmd))
+        pad_cwd = ' ' * (cwd_w - display_width(display_cwd))
+        print(f'│ {pid}{pad_id} │ {display_title}{pad_title} │ {display_cmd}{pad_cmd} │ {display_cwd}{pad_cwd} │')
+
+    print('└' + '─' * (id_w + 2) + '┴' + '─' * (title_w + 2) + '┴' + '─' * (cmd_w + 2) + '┴' + '─' * (cwd_w + 2) + '┘')
+"
