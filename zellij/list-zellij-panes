@@ -1,6 +1,27 @@
 #!/bin/bash
 # List zellij panes grouped by tab with pane IDs in Unicode table format
 # Auto-fits content within terminal width (handles CJK characters)
+#
+# Usage:
+#   list-zellij-panes          # Show panes in current tab only
+#   list-zellij-panes --all    # Show panes in all tabs
+#   list-zellij-panes -a       # Same as --all
+
+# Parse arguments
+SHOW_ALL=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -a|--all)
+            SHOW_ALL=true
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+export SHOW_ALL
 
 python3 -c "
 import json
@@ -35,6 +56,9 @@ def truncate(s, max_width):
 
 term_width = shutil.get_terminal_size((120, 24)).columns
 
+# Import os for environment variables
+import os
+
 # Get panes with all fields (including command info)
 panes_result = subprocess.run(['zellij', 'action', 'list-panes', '--json', '-a'], capture_output=True, text=True)
 panes_data = json.loads(panes_result.stdout) if panes_result.stdout else []
@@ -42,6 +66,22 @@ panes_data = json.loads(panes_result.stdout) if panes_result.stdout else []
 # Get tabs
 tabs_result = subprocess.run(['zellij', 'action', 'list-tabs', '--json'], capture_output=True, text=True)
 tabs_data = json.loads(tabs_result.stdout) if tabs_result.stdout else []
+
+# Determine current tab from ZELLIJ_PANE_ID environment variable
+current_tab_id = None
+zellij_pane_id = os.environ.get('ZELLIJ_PANE_ID', '')
+show_all = os.environ.get('SHOW_ALL', 'false').lower() == 'true'
+
+if zellij_pane_id and not show_all:
+    try:
+        pane_id_num = int(zellij_pane_id)
+        # Find the tab containing this pane
+        for pane in panes_data:
+            if pane.get('id') == pane_id_num:
+                current_tab_id = pane.get('tab_id')
+                break
+    except ValueError:
+        pass
 
 # Map tab_id to tab name
 tab_names = {t['tab_id']: t['name'] for t in tabs_data}
@@ -65,9 +105,12 @@ for pane in panes_data:
         tabs[tab_id] = []
     tabs[tab_id].append((pid_str, title, pane_command, pane_cwd))
 
-# Output
+# Output - filter to current tab only if not showing all
 first = True
 for tab_id in sorted(tabs.keys()):
+    # Skip tabs that are not the current tab (if current_tab_id is set)
+    if current_tab_id is not None and tab_id != current_tab_id:
+        continue
     panes = tabs[tab_id]
     tab_name = tab_names.get(tab_id, f'Tab #{tab_id}')
 
