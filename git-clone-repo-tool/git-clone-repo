@@ -432,15 +432,9 @@ do_clone() {
   if [[ -d "$target" ]]; then
     if [[ -n "$(ls -A "$target" 2>/dev/null)" ]]; then
       warn "Directory already exists and is not empty: $target"
-      info "Skipping clone, changing to directory"
+      info "Skipping clone"
 
-      if [[ "$dry_run" == "true" ]]; then
-        echo "[DRY-RUN] Would cd to: $target" >&2
-      else
-        cd "$target"
-        info "Changed to: $target"
-      fi
-      # Output target path for shell integration
+      # Output target path for shell integration (gcr / cd $(...))
       echo "$target"
       return 0
     fi
@@ -472,12 +466,10 @@ do_clone() {
       die "git clone failed with exit code $?"
     fi
 
-    # Change to target directory
-    cd "$target"
     green "Successfully cloned to: $target"
   fi
 
-  # Output target path for shell integration
+  # Output target path for shell integration (gcr / cd $(...))
   echo "$target"
 }
 

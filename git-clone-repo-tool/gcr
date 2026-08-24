@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#
+# gcr - Clone git repo and auto-change directory
+#
+# Dual-mode script:
+#   1. Source mode (推荐): source this file to define the gcr function.
+#      Functions can change the current shell's directory, so
+#      'gcr <url>' will clone AND cd into the new repo.
+#   2. Direct mode: executing this file directly (e.g. via PATH symlink)
+#      clones and prints the target path (cd has no effect on parent shell).
+#
+# Install:
+#   ln -s /path/to/gcr ~/.local/bin/gcr
+#   echo 'source ~/.local/bin/gcr' >> ~/.bashrc
+#
+# Usage:
+#   gcr <url> [options]    # Clone and change into directory
+#
+
+# The gcr function (defined when sourced or executed)
+gcr() {
+  local target
+  target=$(git-clone-repo "$@")
+  if [[ -n "$target" && -d "$target" ]]; then
+    cd "$target"
+    return 0
+  else
+    echo "Target directory does not exist: $target" >&2
+    return 1
+  fi
+}
+
+# When executed directly (not sourced), run the function.
+# The cd only affects this subshell; the target path is printed to
+# stdout so callers can use: cd "$(gcr <url>)" if preferred.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  gcr "$@"
+fi
