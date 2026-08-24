@@ -20,10 +20,9 @@
 # The gcr function (defined when sourced or executed)
 gcr() {
   local target
-  target=$(git-clone-repo "$@")
+  target=$(git-clone-repo "$@") || return $?
   if [[ -n "$target" && -d "$target" ]]; then
     cd "$target"
-    return 0
   else
     echo "Target directory does not exist: $target" >&2
     return 1

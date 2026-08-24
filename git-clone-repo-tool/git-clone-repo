@@ -52,7 +52,7 @@ red()    { printf '\033[0;31m%s\033[0m\n' "$*" >&2; }
 green()  { printf '\033[0;32m%s\033[0m\n' "$*" >&2; }
 yellow() { printf '\033[0;33m%s\033[0m\n' "$*" >&2; }
 blue()   { printf '\033[0;34m%s\033[0m\n' "$*" >&2; }
-die()    { red "ERROR: $*"; exit 1; }
+die()    { printf '\033[0;31mERROR: %b\033[0m\n' "$*" >&2; exit 1; }
 warn()   { yellow "WARNING: $*"; }
 info()   { blue "INFO: $*"; }
 
