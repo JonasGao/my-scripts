@@ -1,0 +1,535 @@
+#!/usr/bin/env bash
+#
+# git-clone-repo - Intelligent git repository cloner with URL mapping
+#
+# Clone git repositories into structured directories based on configurable
+# URL prefix mappings. Supports HTTPS, SSH, SCP-style, and shorthand URLs.
+#
+# Usage:
+#   git clone-repo <url> [options]
+#   git clone-repo --help
+#
+# Options:
+#   -s, --shallow    Perform shallow clone (git clone --depth 1)
+#   -b, --branch     Checkout specific branch after cloning
+#       --ssh        Rewrite HTTPS URL to SSH format
+#   -n, --dry-run    Show what would be done without executing
+#   -h, --help       Show this help message
+#
+# Configuration:
+#   Config file: $XDG_CONFIG_HOME/clone-mappings/config.ini
+#   Default:     ~/.config/clone-mappings/config.ini
+#
+#   Format:
+#     [prefix]
+#     root = /path/to/directory
+#
+#   Examples:
+#     [github.com]
+#     root = ~/github
+#
+#     [github.com/anthropics]
+#     root = ~/work/anthropic
+#
+#   Clone https://github.com/anthropics/sdk → ~/github/anthropics/sdk
+#   Clone https://github.com/anthropics/claude-code → ~/work/anthropic/claude-code
+#
+
+set -euo pipefail
+
+# === Constants ===
+readonly SCRIPT_NAME=$(basename "$0")
+readonly VERSION="1.0.0"
+
+# Config paths (respect XDG)
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/clone-mappings"
+CONFIG_FILE="$CONFIG_DIR/config.ini"
+
+# === Utility Functions ===
+
+# Color output helpers
+red()    { printf '\033[0;31m%s\033[0m\n' "$*" >&2; }
+green()  { printf '\033[0;32m%s\033[0m\n' "$*" >&2; }
+yellow() { printf '\033[0;33m%s\033[0m\n' "$*" >&2; }
+blue()   { printf '\033[0;34m%s\033[0m\n' "$*" >&2; }
+die()    { red "ERROR: $*"; exit 1; }
+warn()   { yellow "WARNING: $*"; }
+info()   { blue "INFO: $*"; }
+
+# Show help message
+show_help() {
+  cat <<-'EOF'
+git-clone-repo - Intelligent git repository cloner with URL mapping
+
+USAGE:
+    git clone-repo <url> [OPTIONS]
+
+OPTIONS:
+    -s, --shallow      Perform shallow clone (git clone --depth 1)
+    -b, --branch BR    Checkout specific branch after cloning
+        --ssh          Rewrite HTTPS URL to SSH format
+    -n, --dry-run      Show what would be done without executing
+    -h, --help         Show this help message
+
+URL FORMATS:
+    https://host/owner/repo.git
+    git@host:owner/repo.git
+    ssh://git@host/owner/repo.git
+    owner/repo                          (defaults to github.com)
+
+CONFIGURATION:
+    Config file: $XDG_CONFIG_HOME/clone-mappings/config.ini
+    Default:     ~/.config/clone-mappings/config.ini
+
+    Format:
+        [prefix]
+        root = /path/to/directory
+
+    Examples:
+        [github.com]
+        root = ~/github
+
+        [github.com/anthropics]
+        root = ~/work/anthropic
+
+    Clone https://github.com/anthropics/sdk → ~/github/anthropics/sdk
+    Clone https://github.com/anthropics/claude-code → ~/work/anthropic/claude-code
+
+EXAMPLES:
+    # Basic clone
+    git clone-repo https://github.com/anthropics/anthropic-sdk-python
+
+    # Shallow clone with SSH
+    git clone-repo --shallow --ssh owner/repo
+
+    # Clone specific branch
+    git clone-repo -b develop git@host:owner/repo.git
+
+    # Preview without executing
+    git clone-repo --dry-run https://github.com/user/repo
+
+VERSION:
+    1.0.0
+EOF
+}
+
+# === URL Parsing ===
+
+# Parse git URL into host and path segments
+# Returns: host:path1:path2:... (colon-separated for easy processing)
+parse_git_url() {
+  local url="$1"
+  local host path
+
+  # Trim whitespace
+  url="${url#"${url%%[![:space:]]*}"}"
+  url="${url%"${url##*[![:space:]]}"}"
+
+  # SCP-style: git@host:owner/repo.git
+  if [[ "$url" =~ ^[^@/:]+@([^/:]+):(.+)$ ]]; then
+    host="${BASH_REMATCH[1]}"
+    path="${BASH_REMATCH[2]}"
+  # Protocol URLs: https://, ssh://, git://
+  elif [[ "$url" =~ ^(https?|ssh|git)://([^/:]+)(:[0-9]+)?/(.+)$ ]]; then
+    host="${BASH_REMATCH[2]}"
+    path="${BASH_REMATCH[4]}"
+  # Shorthand: owner/repo (default to github.com)
+  elif [[ "$url" =~ ^([^/]+)/([^/]+)$ ]]; then
+    host="github.com"
+    path="$url"
+  else
+    die "Unsupported git URL format: $url"
+  fi
+
+  # Normalize host (remove www. prefix)
+  host="${host#www.}"
+
+  # Remove query string and trailing slash
+  path="${path%%\?*}"
+  path="${path%/}"
+
+  # Remove .git suffix
+  path="${path%.git}"
+
+  # Split path into segments
+  IFS='/' read -ra segments <<< "$path"
+
+  # Validate: need at least 2 segments (owner/repo)
+  if [[ ${#segments[@]} -lt 2 ]]; then
+    die "Unable to determine repository from URL: $url"
+  fi
+
+  # Return colon-separated: host:segment1:segment2:...
+  # Use IFS=: to join array elements with colons
+  local IFS=':'
+  echo "$host:${segments[*]}"
+}
+
+# === Configuration Management ===
+
+# Initialize config directory if needed
+init_config() {
+  if [[ ! -d "$CONFIG_DIR" ]]; then
+    mkdir -p "$CONFIG_DIR"
+    info "Created config directory: $CONFIG_DIR"
+  fi
+}
+
+# Read mappings from INI file
+# Output: prefix|root (pipe-separated, one per line, sorted by prefix length desc)
+read_mappings() {
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    return 0
+  fi
+
+  # Parse INI file: section name is prefix, root = value
+  local current_prefix=""
+  local current_root=""
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # Skip comments and empty lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// }" ]] && continue
+
+    # Section header: [prefix]
+    if [[ "$line" =~ ^\[([^\]]+)\] ]]; then
+      # Output previous mapping if exists
+      if [[ -n "$current_prefix" && -n "$current_root" ]]; then
+        echo "$current_prefix|$current_root"
+      fi
+      current_prefix="${BASH_REMATCH[1]}"
+      current_root=""
+    # Key-value pair: root = /path
+    elif [[ "$line" =~ ^root[[:space:]]*=[[:space:]]*(.+)$ ]]; then
+      current_root="${BASH_REMATCH[1]}"
+    fi
+  done < "$CONFIG_FILE"
+
+  # Output last mapping
+  if [[ -n "$current_prefix" && -n "$current_root" ]]; then
+    echo "$current_prefix|$current_root"
+  fi
+}
+
+# Find best matching mapping (longest prefix)
+# Args: segments (colon-separated)
+# Returns: prefix|root or empty if no match
+find_mapping() {
+  local segments="$1"
+  local best_match=""
+  local best_len=0
+
+  while IFS='|' read -r prefix root; do
+    [[ -z "$prefix" ]] && continue
+
+    # Check if prefix matches segments
+    local prefix_segments="${prefix//\//:}"
+    if [[ "$segments" == "$prefix_segments"* ]]; then
+      local len=${#prefix}
+      if [[ $len -gt $best_len ]]; then
+        best_len=$len
+        best_match="$prefix|$root"
+      fi
+    fi
+  done < <(read_mappings)
+
+  echo "$best_match"
+}
+
+# Interactive mapping selection using fzf
+select_mapping_interactive() {
+  local segments="$1"
+  IFS=':' read -ra seg_array <<< "$segments"
+
+  if [[ ${#seg_array[@]} -lt 2 ]]; then
+    die "Unable to determine mapping levels from URL"
+  fi
+
+  # Build options: each prefix level from host down
+  local options=()
+  for ((i=0; i<${#seg_array[@]}-1; i++)); do
+    local prefix=""
+    for ((j=0; j<=i; j++)); do
+      [[ -n "$prefix" ]] && prefix+="/"
+      prefix+="${seg_array[$j]}"
+    done
+    options+=("$prefix")
+  done
+
+  # Use fzf for selection
+  if ! command -v fzf &>/dev/null; then
+    die "fzf is required for interactive mapping selection. Install fzf or create config manually."
+  fi
+
+  local selected
+  selected=$(printf '%s\n' "${options[@]}" | fzf \
+    --height=40% \
+    --border \
+    --prompt="Select prefix level to map: " \
+    --header="No matching mapping found. Choose a prefix to map to a local directory."
+  )
+
+  [[ -z "$selected" ]] && die "No prefix selected"
+
+  # Ask for root directory
+  local default_name=$(echo "$selected" | rev | cut -d/ -f1 | rev | tr '[:upper:]' '[:lower:]')
+  echo -n "Root directory for '$selected' [default: $default_name]: "
+  read -r root_input
+
+  local root="${root_input:-$default_name}"
+
+  # Resolve relative paths to $HOME
+  if [[ "$root" != /* ]]; then
+    root="$HOME/$root"
+  fi
+
+  # Save mapping
+  save_mapping "$selected" "$root"
+
+  # Return the mapping
+  echo "$selected|$root"
+}
+
+# Save new mapping to config file
+save_mapping() {
+  local prefix="$1"
+  local root="$2"
+
+  init_config
+
+  # Check if mapping already exists
+  local existing
+  existing=$(grep "^\[$prefix\]" "$CONFIG_FILE" 2>/dev/null || true)
+
+  if [[ -n "$existing" ]]; then
+    # Update existing mapping
+    local temp_file=$(mktemp)
+    local in_section=0
+    while IFS= read -r line; do
+      if [[ "$line" =~ ^\[$prefix\] ]]; then
+        in_section=1
+        echo "$line"
+      elif [[ "$line" =~ ^\[ ]]; then
+        in_section=0
+        echo "$line"
+      elif [[ $in_section -eq 1 && "$line" =~ ^root[[:space:]]*= ]]; then
+        echo "root = $root"
+      else
+        echo "$line"
+      fi
+    done < "$CONFIG_FILE" > "$temp_file"
+    mv "$temp_file" "$CONFIG_FILE"
+    info "Updated mapping: $prefix → $root"
+  else
+    # Add new mapping
+    {
+      echo ""
+      echo "[$prefix]"
+      echo "root = $root"
+    } >> "$CONFIG_FILE"
+    info "Created mapping: $prefix → $root"
+  fi
+}
+
+# === Clone Logic ===
+
+# Build target path from mapping and remaining segments
+build_target_path() {
+  local root="$1"
+  local remaining_segments="$2"
+
+  IFS=':' read -ra segments <<< "$remaining_segments"
+
+  local path="$root"
+  for seg in "${segments[@]}"; do
+    path+="/$(echo "$seg" | tr '[:upper:]' '[:lower:]')"
+  done
+
+  echo "$path"
+}
+
+# Rewrite HTTPS URL to SSH
+rewrite_to_ssh() {
+  local url="$1"
+  local host path
+
+  # Already SSH format
+  if [[ "$url" =~ ^git@ ]] || [[ "$url" =~ ^ssh:// ]]; then
+    echo "$url"
+    return
+  fi
+
+  # Shorthand: owner/repo (default to github.com)
+  if [[ "$url" =~ ^([^/]+)/([^/]+)$ ]]; then
+    host="github.com"
+    path="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    echo "git@$host:$path.git"
+    return
+  fi
+
+  # Extract host and path from HTTPS URL
+  if [[ "$url" =~ ^https?://([^/:]+)(:[0-9]+)?/(.+)$ ]]; then
+    host="${BASH_REMATCH[1]}"
+    path="${BASH_REMATCH[3]}"
+    # Remove .git suffix if present
+    path="${path%.git}"
+    echo "git@$host:$path.git"
+  else
+    die "Cannot rewrite URL to SSH: $url"
+  fi
+}
+
+# Main clone function
+do_clone() {
+  local url="$1"
+  local shallow="${2:-false}"
+  local branch="${3:-}"
+  local use_ssh="${4:-false}"
+  local dry_run="${5:-false}"
+
+  # Parse URL
+  local parsed
+  parsed=$(parse_git_url "$url")
+  local host="${parsed%%:*}"
+  local segments="${parsed#*:}"
+
+  # Find or create mapping
+  local mapping
+  mapping=$(find_mapping "$host:$segments")
+
+  if [[ -z "$mapping" ]]; then
+    # Interactive mapping selection
+    mapping=$(select_mapping_interactive "$host:$segments")
+  fi
+
+  # Extract prefix and root
+  local prefix="${mapping%%|*}"
+  local root="${mapping#*|}"
+
+  # Expand ~ in root path
+  root="${root/#\~/$HOME}"
+
+  # Calculate remaining segments after prefix
+  # Build full segments including host for matching
+  local full_segments="$host:$segments"
+  local prefix_segments="${prefix//\//:}"
+
+  IFS=':' read -ra prefix_array <<< "$prefix_segments"
+  IFS=':' read -ra segments_array <<< "$full_segments"
+
+  # Remaining segments = total segments - prefix segments
+  local remaining_segments=""
+  for ((i=${#prefix_array[@]}; i<${#segments_array[@]}; i++)); do
+    [[ -n "$remaining_segments" ]] && remaining_segments+=":"
+    remaining_segments+="${segments_array[$i]}"
+  done
+
+  # Build target path
+  local target
+  target=$(build_target_path "$root" "$remaining_segments")
+
+  # Check if target already exists
+  if [[ -d "$target" ]]; then
+    if [[ -n "$(ls -A "$target" 2>/dev/null)" ]]; then
+      warn "Directory already exists and is not empty: $target"
+      info "Skipping clone, changing to directory"
+
+      if [[ "$dry_run" == "true" ]]; then
+        echo "[DRY-RUN] Would cd to: $target"
+      else
+        cd "$target"
+        info "Changed to: $target"
+      fi
+      return 0
+    fi
+  fi
+
+  # Prepare clone URL
+  local clone_url="$url"
+  if [[ "$use_ssh" == "true" ]]; then
+    clone_url=$(rewrite_to_ssh "$url")
+  fi
+
+  # Build git clone arguments
+  local git_args=(clone)
+  [[ "$shallow" == "true" ]] && git_args+=(--depth 1)
+  [[ -n "$branch" ]] && git_args+=(-b "$branch")
+  git_args+=("$clone_url" "$target")
+
+  # Execute or preview
+  if [[ "$dry_run" == "true" ]]; then
+    echo "[DRY-RUN] Would execute: git ${git_args[*]}"
+    echo "[DRY-RUN] Target directory: $target"
+  else
+    # Create parent directories
+    mkdir -p "$(dirname "$target")"
+
+    # Execute clone
+    info "Cloning $clone_url to $target"
+    if ! git "${git_args[@]}"; then
+      die "git clone failed with exit code $?"
+    fi
+
+    # Change to target directory
+    cd "$target"
+    green "Successfully cloned to: $target"
+  fi
+}
+
+# === Main ===
+
+main() {
+  # Parse arguments
+  local url=""
+  local shallow=false
+  local branch=""
+  local use_ssh=false
+  local dry_run=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -s|--shallow)
+        shallow=true
+        shift
+        ;;
+      -b|--branch)
+        branch="$2"
+        shift 2
+        ;;
+      --ssh)
+        use_ssh=true
+        shift
+        ;;
+      -n|--dry-run)
+        dry_run=true
+        shift
+        ;;
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -*)
+        die "Unknown option: $1\nUse --help for usage information"
+        ;;
+      *)
+        if [[ -z "$url" ]]; then
+          url="$1"
+        else
+          die "Multiple URLs specified. Only one URL is allowed"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  # Validate required arguments
+  if [[ -z "$url" ]]; then
+    die "URL is required\nUse --help for usage information"
+  fi
+
+  # Execute clone
+  do_clone "$url" "$shallow" "$branch" "$use_ssh" "$dry_run"
+}
+
+# Run main
+main "$@"
