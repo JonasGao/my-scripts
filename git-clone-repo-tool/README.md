@@ -82,11 +82,14 @@ git clone-repo https://newhost.com/owner/repo
 ## Usage
 
 ```bash
-# Basic usage
+# Basic usage (clone and output directory path)
 git clone-repo <url> [options]
 
-# As git subcommand (if git-clone-repo is in PATH)
-git clone-repo <url> [options]
+# Auto-change directory after clone
+gcr <url> [options]
+
+# Manual directory change
+cd $(git clone-repo <url> [options])
 ```
 
 ### URL formats
@@ -113,23 +116,48 @@ git clone-repo anthropics/anthropic-sdk-python
 -h, --help         Show help message
 ```
 
+### Auto-change directory
+
+After successful clone, you can automatically jump to the repository directory:
+
+**Method 1: Use `gcr` wrapper function** (recommended)
+```bash
+# Clone and auto-change to directory
+gcr https://github.com/anthropics/anthropic-sdk-python
+
+# The gcr function wraps git-clone-repo and changes directory
+# All options are passed through
+gcr --shallow --ssh owner/repo
+```
+
+**Method 2: Command substitution**
+```bash
+# Clone and change directory in one command
+cd $(git clone-repo https://github.com/anthropics/anthropic-sdk-python)
+```
+
 ### Examples
 
 ```bash
-# Basic clone
+# Basic clone (outputs directory path)
 git clone-repo https://github.com/anthropics/anthropic-sdk-python
+# Output: /home/god/work/anthropic/anthropic-sdk-python
+
+# Clone and auto-change directory
+gcr https://github.com/anthropics/anthropic-sdk-python
+# Now in: /home/god/work/anthropic/anthropic-sdk-python
 
 # Shallow clone with SSH
-git clone-repo --shallow --ssh owner/repo
+gcr --shallow --ssh owner/repo
 
 # Clone specific branch
-git clone-repo -b develop git@host:owner/repo.git
+gcr -b develop git@host:owner/repo.git
 
 # Preview without executing
 git clone-repo --dry-run https://github.com/user/repo
 
 # Combined options
-git clone-repo --shallow --branch main --ssh https://github.com/user/repo
+gcr --shallow --branch main --ssh https://github.com/user/repo
 ```
 
 ## Directory structure

@@ -435,11 +435,13 @@ do_clone() {
       info "Skipping clone, changing to directory"
 
       if [[ "$dry_run" == "true" ]]; then
-        echo "[DRY-RUN] Would cd to: $target"
+        echo "[DRY-RUN] Would cd to: $target" >&2
       else
         cd "$target"
         info "Changed to: $target"
       fi
+      # Output target path for shell integration
+      echo "$target"
       return 0
     fi
   fi
@@ -458,8 +460,8 @@ do_clone() {
 
   # Execute or preview
   if [[ "$dry_run" == "true" ]]; then
-    echo "[DRY-RUN] Would execute: git ${git_args[*]}"
-    echo "[DRY-RUN] Target directory: $target"
+    echo "[DRY-RUN] Would execute: git ${git_args[*]}" >&2
+    echo "[DRY-RUN] Target directory: $target" >&2
   else
     # Create parent directories
     mkdir -p "$(dirname "$target")"
@@ -474,6 +476,9 @@ do_clone() {
     cd "$target"
     green "Successfully cloned to: $target"
   fi
+
+  # Output target path for shell integration
+  echo "$target"
 }
 
 # === Main ===

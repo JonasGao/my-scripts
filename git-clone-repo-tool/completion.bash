@@ -39,8 +39,19 @@ _git_clone_repo() {
   # Could add URL completion here (from history, git remotes, etc.)
 }
 
+# Shell function wrapper that automatically changes directory after clone
+# Usage: gcr <url> [options]
+gcr() {
+  local target
+  target=$(git-clone-repo "$@")
+  if [[ -n "$target" && -d "$target" ]]; then
+    cd "$target"
+  fi
+}
+
 # Register completion for both direct call and git subcommand
 complete -F _git_clone_repo git-clone-repo
+complete -F _git_clone_repo gcr
 
 # If using as git subcommand, also register for git
 if command -v __git_complete &>/dev/null; then

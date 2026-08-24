@@ -38,5 +38,8 @@ else
 fi
 
 echo -e "\n${GREEN}Installation complete!${NC}"
-echo -e "Usage: ${BLUE}git clone-repo <url>${NC}"
-echo -e "Help:  ${BLUE}git-clone-repo --help${NC}"
+echo -e "\nUsage:"
+echo -e "  ${BLUE}git clone-repo <url>${NC}          # Clone and output directory path"
+echo -e "  ${BLUE}gcr <url>${NC}                      # Clone and auto-change directory"
+echo -e "  ${BLUE}cd \$(git clone-repo <url>)${NC}   # Manual directory change"
+echo -e "\nHelp: ${BLUE}git-clone-repo --help${NC}"
