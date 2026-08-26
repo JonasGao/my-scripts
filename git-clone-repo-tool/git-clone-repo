@@ -165,6 +165,28 @@ parse_git_url() {
   echo "$host:${segments[*]}"
 }
 
+# === Path Utilities ===
+
+# Expand ~ to $HOME in path
+expand_tilde() {
+  local path="$1"
+  if [[ "$path" == "~"* ]]; then
+    echo "${path/#\~/$HOME}"
+  else
+    echo "$path"
+  fi
+}
+
+# Format path for display (show ~ instead of $HOME)
+format_path_for_display() {
+  local path="$1"
+  if [[ "$path" == "$HOME"* ]]; then
+    echo "~${path#"$HOME"}"
+  else
+    echo "$path"
+  fi
+}
+
 # === Configuration Management ===
 
 # Initialize config directory if needed
@@ -236,6 +258,142 @@ find_mapping() {
   echo "$best_match"
 }
 
+# Check if prefix is a sibling of the given host
+# Args: prefix, host
+# Returns: 0 if sibling, 1 otherwise
+is_sibling_of() {
+  local prefix="$1"
+  local host="$2"
+  [[ "$prefix" == "$host" || "$prefix" == "$host/"* ]]
+}
+
+# List existing mappings on the same host (for reference)
+# Args: host (e.g., "github.com")
+# Output: prefix|root (one per line, max 3)
+list_sibling_mappings() {
+  local host="$1"
+  local count=0
+
+  while IFS='|' read -r prefix root; do
+    [[ -z "$prefix" ]] && continue
+    if is_sibling_of "$prefix" "$host"; then
+      echo "$prefix|$root"
+      ((count++))
+      [[ $count -ge 3 ]] && break
+    fi
+  done < <(read_mappings)
+}
+
+# Infer default root from sibling mappings
+# If siblings share a common root, use it; otherwise return empty
+# Args: host
+# Output: common root path or empty
+infer_default_from_siblings() {
+  local host="$1"
+  local common_root=""
+  local first=1
+
+  while IFS='|' read -r prefix root; do
+    [[ -z "$prefix" ]] && continue
+    if is_sibling_of "$prefix" "$host"; then
+      # Expand ~ for comparison
+      root=$(expand_tilde "$root")
+      if [[ $first -eq 1 ]]; then
+        common_root="$root"
+        first=0
+      elif [[ "$root" != "$common_root" ]]; then
+        # Siblings have different roots, can't infer
+        echo ""
+        return
+      fi
+    fi
+  done < <(read_mappings)
+
+  # Return the common root (formatted with ~ if applicable)
+  if [[ -n "$common_root" ]]; then
+    format_path_for_display "$common_root"
+  fi
+}
+
+# Validate root directory path
+# Returns: 0=ok, 1=error (fatal), 2=warn (needs confirmation)
+# Prints messages to stderr
+validate_root() {
+  local root="$1"
+
+  # Create parent directories if needed (Q4-c: silent + auto-create)
+  local parent
+  parent=$(dirname "$root")
+  if [[ ! -d "$parent" ]]; then
+    mkdir -p "$parent" 2>/dev/null || {
+      red "ERROR: Cannot create parent directory: $parent"
+      return 1
+    }
+  fi
+
+  # Q4-d: Check if writable
+  if [[ -e "$root" && ! -w "$root" ]]; then
+    red "ERROR: Path is not writable: $root"
+    return 1
+  fi
+
+  if [[ -d "$parent" && ! -w "$parent" ]]; then
+    red "ERROR: Parent directory is not writable: $parent"
+    return 1
+  fi
+
+  # Q4-e: Check if root itself is a git repo
+  if [[ -d "$root/.git" ]]; then
+    yellow "WARNING: $root appears to be an existing git repository."
+    return 2
+  fi
+
+  return 0
+}
+
+# Check if prefix already has a mapping with a different root
+# Returns 0 if conflict exists, 1 otherwise
+check_prefix_conflict() {
+  local prefix="$1"
+  local new_root="$2"
+
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    return 1
+  fi
+
+  local current_section=""
+  local current_root=""
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// }" ]] && continue
+
+    if [[ "$line" =~ ^\[([^\]]+)\] ]]; then
+      if [[ "$current_section" == "$prefix" && -n "$current_root" ]]; then
+        # Expand ~ for comparison
+        current_root=$(expand_tilde "$current_root")
+        if [[ "$current_root" != "$new_root" ]]; then
+          return 0  # Conflict found
+        fi
+      fi
+      current_section="${BASH_REMATCH[1]}"
+      current_root=""
+    elif [[ "$line" =~ ^root[[:space:]]*=[[:space:]]*(.+)$ ]]; then
+      current_root="${BASH_REMATCH[1]}"
+    fi
+  done < "$CONFIG_FILE"
+
+  # Check last section
+  if [[ "$current_section" == "$prefix" && -n "$current_root" ]]; then
+    current_root=$(expand_tilde "$current_root")
+    if [[ "$current_root" != "$new_root" ]]; then
+      return 0  # Conflict found
+    fi
+  fi
+
+  return 1  # No conflict
+}
+
 # Interactive mapping selection using fzf
 select_mapping_interactive() {
   local segments="$1"
@@ -244,6 +402,9 @@ select_mapping_interactive() {
   if [[ ${#seg_array[@]} -lt 2 ]]; then
     die "Unable to determine mapping levels from URL"
   fi
+
+  # Extract host (first segment)
+  local host="${seg_array[0]}"
 
   # Build options: each prefix level from host down
   local options=()
@@ -271,23 +432,100 @@ select_mapping_interactive() {
 
   [[ -z "$selected" ]] && die "No prefix selected"
 
-  # Ask for root directory
-  local default_name=$(echo "$selected" | rev | cut -d/ -f1 | rev | tr '[:upper:]' '[:lower:]')
-  echo -n "Root directory for '$selected' [default: $default_name]: "
-  read -r root_input
+  # === Q1/Q2: Transition message + sibling mappings ===
+  echo ""
+  blue "No matching mapping found. Configure a new mapping:"
 
-  local root="${root_input:-$default_name}"
-
-  # Resolve relative paths to $HOME
-  if [[ "$root" != /* ]]; then
-    root="$HOME/$root"
+  # Show existing mappings on same host (Q2)
+  local siblings
+  siblings=$(list_sibling_mappings "$host")
+  if [[ -n "$siblings" ]]; then
+    echo ""
+    yellow "Existing mappings on $host:"
+    while IFS='|' read -r sib_prefix sib_root; do
+      [[ -z "$sib_prefix" ]] && continue
+      # Format root for display
+      local display_root
+      display_root=$(format_path_for_display "$(expand_tilde "$sib_root")")
+      echo "  $sib_prefix → $display_root"
+    done <<< "$siblings"
   fi
 
+  # === Q6: Infer default from siblings ===
+  local default_root
+  default_root=$(infer_default_from_siblings "$host")
+
+  # Fallback: last segment lowercased
+  if [[ -z "$default_root" ]]; then
+    default_root=$(echo "$selected" | rev | cut -d/ -f1 | rev | tr '[:upper:]' '[:lower:]')
+  fi
+
+  # === Main input loop (Q8: re-prompt on rejection) ===
+  local root_input root_expanded validation_status needs_confirmation
+  while true; do
+    echo ""
+    # Q1: Colored prompt on dedicated line
+    yellow "? Root directory for '$selected' [default: $default_root]:"
+    read -r root_input
+
+    # Use default if empty
+    root_input="${root_input:-$default_root}"
+
+    # === Q3: Expand input ===
+    # Expand ~ to $HOME
+    root_expanded=$(expand_tilde "$root_input")
+
+    # Bare name (no / or ~) → $HOME/barename
+    if [[ "$root_expanded" != /* && "$root_expanded" != "~"* ]]; then
+      root_expanded="$HOME/$root_expanded"
+    fi
+
+    # === Q4: Validate ===
+    needs_confirmation=false
+    validate_root "$root_expanded"
+    validation_status=$?
+
+    if [[ $validation_status -eq 1 ]]; then
+      # Error: re-prompt
+      continue
+    elif [[ $validation_status -eq 2 ]]; then
+      # Warn: will need confirmation
+      needs_confirmation=true
+    fi
+
+    # Check for prefix conflict (same prefix, different root)
+    if check_prefix_conflict "$selected" "$root_expanded"; then
+      yellow "WARNING: Prefix '$selected' already exists with a different root."
+      needs_confirmation=true
+    fi
+
+    # === Q5: Preview ===
+    local display_path
+    display_path=$(format_path_for_display "$root_expanded")
+
+    if [[ "$needs_confirmation" == "true" ]]; then
+      # Explicit y/n confirmation
+      echo ""
+      echo -n "Save mapping '$selected' → $display_path? [y/N]: "
+      read -r confirm
+      if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        # Re-prompt
+        continue
+      fi
+    else
+      # Single-line preview, auto-continue
+      green "✓ Mapping: $selected → $display_path"
+    fi
+
+    # Success: break out of loop
+    break
+  done
+
   # Save mapping
-  save_mapping "$selected" "$root"
+  save_mapping "$selected" "$root_expanded"
 
   # Return the mapping
-  echo "$selected|$root"
+  echo "$selected|$root_expanded"
 }
 
 # Save new mapping to config file
