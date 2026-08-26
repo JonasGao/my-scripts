@@ -14,11 +14,207 @@
 #   echo 'source ~/.local/bin/gcr' >> ~/.bashrc
 #
 # Usage:
-#   gcr <url> [options]    # Clone and change into directory
+#   gcr <url> [options]                    # Clone and change into directory
+#   gcr mapping list                        # List configured URL mappings
+#   gcr mapping remove <prefix> [--yes]     # Remove a configured mapping
 #
+
+gcr_config_file() {
+  printf '%s/clone-mappings/config.ini\n' "${XDG_CONFIG_HOME:-$HOME/.config}"
+}
+
+gcr_error() {
+  printf 'ERROR: %s\n' "$*" >&2
+}
+
+gcr_format_root() {
+  local root="$1"
+
+  if [[ "$root" == "$HOME" ]]; then
+    printf '~\n'
+  elif [[ "$root" == "$HOME/"* ]]; then
+    printf '~/%s\n' "${root#"$HOME/"}"
+  else
+    printf '%s\n' "$root"
+  fi
+}
+
+# Output one exact prefix/root pair per line, preserving configuration order.
+gcr_read_mappings() {
+  local config_file
+  config_file=$(gcr_config_file)
+  [[ -f "$config_file" ]] || return 0
+
+  local line current_prefix="" current_root=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// }" ]] && continue
+
+    if [[ "$line" =~ ^\[([^\]]+)\] ]]; then
+      if [[ -n "$current_prefix" && -n "$current_root" ]]; then
+        printf '%s|%s\n' "$current_prefix" "$current_root"
+      fi
+      current_prefix="${BASH_REMATCH[1]}"
+      current_root=""
+    elif [[ "$line" =~ ^root[[:space:]]*=[[:space:]]*(.+)$ ]]; then
+      current_root="${BASH_REMATCH[1]}"
+    fi
+  done < "$config_file"
+
+  if [[ -n "$current_prefix" && -n "$current_root" ]]; then
+    printf '%s|%s\n' "$current_prefix" "$current_root"
+  fi
+}
+
+gcr_mapping_help() {
+  cat <<-'EOF'
+Usage:
+  gcr mapping list
+  gcr mapping remove <prefix> [--yes]
+
+Commands:
+  list                    List configured mappings.
+  remove <prefix>         Remove an exact mapping after confirmation.
+  remove <prefix> --yes   Remove without confirmation.
+EOF
+}
+
+gcr_mapping_list() {
+  local -a mappings=()
+  local mapping prefix root
+  local prefix_width=6
+
+  while IFS= read -r mapping; do
+    [[ -z "$mapping" ]] && continue
+    mappings+=("$mapping")
+    prefix="${mapping%%|*}"
+    (( ${#prefix} > prefix_width )) && prefix_width=${#prefix}
+  done < <(gcr_read_mappings)
+
+  if [[ ${#mappings[@]} -eq 0 ]]; then
+    printf 'No mappings configured.\n'
+    return 0
+  fi
+
+  printf "%-${prefix_width}s  %s\n" "PREFIX" "ROOT"
+  for mapping in "${mappings[@]}"; do
+    prefix="${mapping%%|*}"
+    root="${mapping#*|}"
+    printf "%-${prefix_width}s  %s\n" "$prefix" "$(gcr_format_root "$root")"
+  done
+}
+
+gcr_mapping_remove() {
+  local prefix="" assume_yes=false
+  local mapping mapping_prefix found_root=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes)
+        assume_yes=true
+        ;;
+      -h|--help)
+        gcr_mapping_help
+        return 0
+        ;;
+      -*)
+        gcr_error "Unknown remove option: $1"
+        return 2
+        ;;
+      *)
+        if [[ -n "$prefix" ]]; then
+          gcr_error "remove accepts exactly one prefix"
+          return 2
+        fi
+        prefix="$1"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$prefix" ]]; then
+    gcr_error "A prefix is required. Use: gcr mapping remove <prefix> [--yes]"
+    return 2
+  fi
+
+  while IFS= read -r mapping; do
+    mapping_prefix="${mapping%%|*}"
+    if [[ "$mapping_prefix" == "$prefix" ]]; then
+      found_root="${mapping#*|}"
+      break
+    fi
+  done < <(gcr_read_mappings)
+
+  if [[ -z "$found_root" ]]; then
+    gcr_error "Mapping not found: $prefix"
+    return 1
+  fi
+
+  printf 'Remove mapping:\n'
+  printf '  Prefix: %s\n' "$prefix"
+  printf '  Root:   %s\n' "$(gcr_format_root "$found_root")"
+
+  if [[ "$assume_yes" != true ]]; then
+    local confirm
+    printf 'Continue? [y/N]: '
+    if ! read -r confirm || [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+      printf 'Removal cancelled.\n'
+      return 1
+    fi
+  fi
+
+  local config_file temp_file in_section=false line
+  config_file=$(gcr_config_file)
+  temp_file=$(mktemp "${config_file}.XXXXXX") || {
+    gcr_error "Unable to create a temporary config file"
+    return 1
+  }
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^\[([^\]]+)\] ]]; then
+      if [[ "${BASH_REMATCH[1]}" == "$prefix" ]]; then
+        in_section=true
+        continue
+      fi
+      in_section=false
+    fi
+
+    [[ "$in_section" == true ]] || printf '%s\n' "$line"
+  done < "$config_file" > "$temp_file"
+
+  mv "$temp_file" "$config_file"
+  printf 'Removed mapping: %s\n' "$prefix"
+}
+
+gcr_mapping() {
+  case "${1:-}" in
+    list)
+      [[ $# -eq 1 ]] || { gcr_error "list does not accept arguments"; return 2; }
+      gcr_mapping_list
+      ;;
+    remove)
+      shift
+      gcr_mapping_remove "$@"
+      ;;
+    -h|--help|"")
+      gcr_mapping_help
+      ;;
+    *)
+      gcr_error "Unknown mapping command: $1"
+      gcr_mapping_help >&2
+      return 2
+      ;;
+  esac
+}
 
 # The gcr function (defined when sourced or executed)
 gcr() {
+  if [[ "${1:-}" == "mapping" ]]; then
+    shift
+    gcr_mapping "$@"
+    return $?
+  fi
+
   local target
   target=$(git-clone-repo "$@") || return $?
   if [[ -n "$target" && -d "$target" ]]; then

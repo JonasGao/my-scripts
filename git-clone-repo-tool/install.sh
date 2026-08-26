@@ -22,9 +22,11 @@ mkdir -p "$COMPLETION_DIR"
 
 # Create symlinks
 ln -sf "$SCRIPT_DIR/git-clone-repo" "$BIN_DIR/git-clone-repo"
+ln -sf "$SCRIPT_DIR/gcr" "$BIN_DIR/gcr"
 ln -sf "$SCRIPT_DIR/completion.bash" "$COMPLETION_DIR/git-clone-repo"
 
 echo -e "${GREEN}✓ Installed git-clone-repo to $BIN_DIR${NC}"
+echo -e "${GREEN}✓ Installed gcr to $BIN_DIR${NC}"
 echo -e "${GREEN}✓ Installed completion script to $COMPLETION_DIR${NC}"
 
 # Verify
@@ -41,5 +43,6 @@ echo -e "\n${GREEN}Installation complete!${NC}"
 echo -e "\nUsage:"
 echo -e "  ${BLUE}git clone-repo <url>${NC}          # Clone and output directory path"
 echo -e "  ${BLUE}gcr <url>${NC}                      # Clone and auto-change directory"
+echo -e "  ${BLUE}gcr mapping list${NC}                # List URL mappings"
 echo -e "  ${BLUE}cd \$(git clone-repo <url>)${NC}   # Manual directory change"
 echo -e "\nHelp: ${BLUE}git-clone-repo --help${NC}"

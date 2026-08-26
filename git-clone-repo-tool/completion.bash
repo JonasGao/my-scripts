@@ -4,6 +4,27 @@ _git_clone_repo() {
   local cur prev words cword
   _init_completion || return
 
+  if [[ "${words[1]:-}" == "mapping" ]]; then
+    if [[ $cword -eq 2 ]]; then
+      COMPREPLY=($(compgen -W "list remove --help" -- "${cur}"))
+      return
+    fi
+
+    if [[ "${words[2]:-}" == "remove" ]]; then
+      if [[ "${cur}" == -* ]]; then
+        COMPREPLY=($(compgen -W "--yes --help" -- "${cur}"))
+      else
+        local config_file="${XDG_CONFIG_HOME:-$HOME/.config}/clone-mappings/config.ini"
+        local prefixes
+        prefixes=$(sed -n 's/^\[\([^]]*\)\].*/\1/p' "$config_file" 2>/dev/null)
+        COMPREPLY=($(compgen -W "$prefixes" -- "${cur}"))
+      fi
+      return
+    fi
+
+    return
+  fi
+
   case "${prev}" in
     -b|--branch)
       # No completion for branch name (could query git in future)
@@ -42,6 +63,16 @@ _git_clone_repo() {
 # Shell function wrapper that automatically changes directory after clone
 # Usage: gcr <url> [options]
 gcr() {
+  if [[ "${1:-}" == "mapping" ]]; then
+    shift
+    if declare -F gcr_mapping &>/dev/null; then
+      gcr_mapping "$@"
+    else
+      command gcr mapping "$@"
+    fi
+    return $?
+  fi
+
   local target
   target=$(git-clone-repo "$@")
   if [[ -n "$target" && -d "$target" ]]; then

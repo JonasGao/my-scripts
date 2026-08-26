@@ -11,6 +11,7 @@ Bash implementation of the PowerShell `Clone-GitRepo` function from [my-configs]
 - ✅ Longest prefix matching
 - ✅ Automatic directory structure creation
 - ✅ Interactive mapping configuration (via fzf)
+- ✅ View and remove mappings with `gcr mapping`
 - ✅ Clone options: shallow, branch selection, SSH rewrite
 - ✅ Dry-run preview mode
 - ✅ Detailed error messages
@@ -29,11 +30,15 @@ cd /path/to/my-scripts/git-clone-repo-tool
 ```bash
 # Create symlinks
 ln -s /path/to/my-scripts/git-clone-repo-tool/git-clone-repo ~/.local/bin/git-clone-repo
+ln -s /path/to/my-scripts/git-clone-repo-tool/gcr ~/.local/bin/gcr
 ln -s /path/to/my-scripts/git-clone-repo-tool/completion.bash \
   ~/.local/share/bash-completion/completions/git-clone-repo
 
 # Ensure ~/.local/bin is in PATH
 export PATH="$HOME/.local/bin:$PATH"
+
+# Source gcr to let clone commands change the current shell directory
+source ~/.local/bin/gcr
 ```
 
 ## Configuration
@@ -79,6 +84,26 @@ git clone-repo https://newhost.com/owner/repo
 # > Root directory for 'newhost.com' [default: newhost]: /path/to/dir
 ```
 
+### Manage mappings
+
+`gcr` also provides mapping management commands. They use the same XDG-aware
+configuration file as `git-clone-repo`.
+
+```bash
+# List mappings in configuration order
+gcr mapping list
+
+# Remove exactly one mapping (asks for confirmation)
+gcr mapping remove github.com/anthropics
+
+# Remove without prompting, for scripts
+gcr mapping remove github.com/anthropics --yes
+```
+
+`list` prints a human-readable `PREFIX` / `ROOT` table. When no mappings are
+configured, it prints `No mappings configured.`. `remove` only accepts an exact
+prefix and leaves the config file, its directory, and unrelated sections intact.
+
 ## Usage
 
 ```bash
@@ -87,6 +112,9 @@ git clone-repo <url> [options]
 
 # Auto-change directory after clone
 gcr <url> [options]
+
+# Manage URL-prefix mappings
+gcr mapping <list|remove>
 
 # Manual directory change
 cd $(git clone-repo <url> [options])
