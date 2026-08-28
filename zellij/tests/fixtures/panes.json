@@ -1,0 +1,49 @@
+[
+  {
+    "id": 101,
+    "title": "tab-bar",
+    "is_floating": false,
+    "tab_id": 1
+  },
+  {
+    "id": 102,
+    "title": "status-bar",
+    "is_floating": false,
+    "tab_id": 1
+  },
+  {
+    "id": 10,
+    "title": "editor",
+    "pane_command": "vim",
+    "pane_cwd": "/work/project",
+    "is_floating": false,
+    "tab_id": 1
+  },
+  {
+    "id": 11,
+    "title": "debug status-bar issue",
+    "pane_command": "bash",
+    "pane_cwd": "/work/debug",
+    "is_floating": true,
+    "tab_id": 1
+  },
+  {
+    "id": 12,
+    "title": "legacy pane",
+    "pane_command": "sh",
+    "pane_cwd": "/work/legacy",
+    "tab_id": 1
+  },
+  {
+    "id": 201,
+    "title": "tab-bar",
+    "is_floating": false,
+    "tab_id": 2
+  },
+  {
+    "id": 202,
+    "title": "status-bar",
+    "is_floating": false,
+    "tab_id": 2
+  }
+]

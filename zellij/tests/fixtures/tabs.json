@@ -1,0 +1,17 @@
+[
+  {
+    "tab_id": 1,
+    "name": "Working Tab",
+    "active": true
+  },
+  {
+    "tab_id": 2,
+    "name": "Bars Only Tab",
+    "active": false
+  },
+  {
+    "tab_id": 3,
+    "name": "Empty Tab",
+    "active": false
+  }
+]

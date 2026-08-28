@@ -3,16 +3,22 @@
 # Auto-fits content within terminal width (handles CJK characters)
 #
 # Usage:
-#   list-zellij-panes          # Show panes in current tab only
-#   list-zellij-panes --all    # Show panes in all tabs
-#   list-zellij-panes -a       # Same as --all
+#   list-zellij-panes                    # Show panes in current tab, hiding bar panes
+#   list-zellij-panes --show-bars        # Include tab-bar and status-bar panes
+#   list-zellij-panes --all              # Show panes in all tabs
+#   list-zellij-panes --all --show-bars  # Show all panes in all tabs
 
 # Parse arguments
 SHOW_ALL=false
+SHOW_BARS=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         -a|--all)
             SHOW_ALL=true
+            shift
+            ;;
+        --show-bars)
+            SHOW_BARS=true
             shift
             ;;
         *)
@@ -21,7 +27,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-export SHOW_ALL
+export SHOW_ALL SHOW_BARS
 
 python3 -c "
 import json
@@ -54,6 +60,10 @@ def truncate(s, max_width):
         w += cw
     return result
 
+def table_border(left, junction, right, column_widths):
+    segments = ('─' * (width + 2) for width in column_widths)
+    return left + junction.join(segments) + right
+
 term_width = shutil.get_terminal_size((120, 24)).columns
 
 # Import os for environment variables
@@ -71,6 +81,7 @@ tabs_data = json.loads(tabs_result.stdout) if tabs_result.stdout else []
 current_tab_id = None
 zellij_pane_id = os.environ.get('ZELLIJ_PANE_ID', '')
 show_all = os.environ.get('SHOW_ALL', 'false').lower() == 'true'
+show_bars = os.environ.get('SHOW_BARS', 'false').lower() == 'true'
 
 if zellij_pane_id and not show_all:
     try:
@@ -87,11 +98,25 @@ if zellij_pane_id and not show_all:
 tab_names = {t['tab_id']: t['name'] for t in tabs_data}
 
 # Group panes by tab_id
-tabs = {}
+tabs = {t['tab_id']: [] for t in tabs_data}
+filtered_bar_counts = {}
 for pane in panes_data:
     tab_id = pane.get('tab_id', 0)
     pane_id = pane.get('id', 0)
     title = pane.get('title', '')
+
+    if not show_bars and title in {'tab-bar', 'status-bar'}:
+        filtered_bar_counts[tab_id] = filtered_bar_counts.get(tab_id, 0) + 1
+        continue
+
+    floating_value = pane.get('is_floating')
+    if floating_value is True:
+        floating = 'yes'
+    elif floating_value is False:
+        floating = 'no'
+    else:
+        floating = '-'
+
     pane_command = pane.get('pane_command', '') or ''
     pane_cwd = pane.get('pane_cwd', '') or ''
 
@@ -103,7 +128,7 @@ for pane in panes_data:
 
     if tab_id not in tabs:
         tabs[tab_id] = []
-    tabs[tab_id].append((pid_str, title, pane_command, pane_cwd))
+    tabs[tab_id].append((pid_str, floating, title, pane_command, pane_cwd))
 
 # Output - filter to current tab only if not showing all
 first = True
@@ -115,43 +140,66 @@ for tab_id in sorted(tabs.keys()):
     tab_name = tab_names.get(tab_id, f'Tab #{tab_id}')
 
     # Calculate column widths
-    id_w = max(display_width(p[0]) for p in panes)
-    id_w = max(id_w, 7)  # 'PANE_ID' header
+    id_w = max([7] + [display_width(p[0]) for p in panes])  # 'PANE_ID' header
+
+    floating_w = max([8] + [display_width(p[1]) for p in panes])  # 'FLOATING' header
 
     # Calculate command column width
-    cmd_w = max(display_width(p[2]) for p in panes) if panes else 0
+    cmd_w = max(display_width(p[3]) for p in panes) if panes else 0
     cmd_w = max(cmd_w, 7)  # 'COMMAND' header
     cmd_w = min(cmd_w, 40)  # Max width for command column
 
     # Calculate cwd column width
-    cwd_w = max(display_width(p[3]) for p in panes) if panes else 0
+    cwd_w = max(display_width(p[4]) for p in panes) if panes else 0
     cwd_w = max(cwd_w, 3)  # 'CWD' header
     cwd_w = min(cwd_w, 30)  # Max width for cwd column
 
+    empty_message = None
+    if not panes:
+        if filtered_bar_counts.get(tab_id, 0) > 0:
+            empty_message = 'No panes after filtering. Use --show-bars to include bar panes.'
+        else:
+            empty_message = 'No panes.'
+
     # Max available width for title
-    border_chars = 9  # │ and spaces for 4 columns
-    available_title_w = term_width - id_w - cmd_w - cwd_w - border_chars - 8
-    title_w = min(max(display_width(p[1]) for p in panes), available_title_w)
+    column_count = 5
+    table_frame_w = 3 * column_count + 1
+    available_title_w = term_width - id_w - floating_w - cmd_w - cwd_w - table_frame_w
+    desired_title_w = max([5] + [display_width(p[2]) for p in panes])
+    if empty_message is not None:
+        fixed_width = id_w + floating_w + cmd_w + cwd_w + table_frame_w
+        desired_title_w = max(desired_title_w, display_width(empty_message) + 4 - fixed_width)
+    title_w = min(desired_title_w, available_title_w)
     title_w = max(title_w, 5)  # 'TITLE' header
+    column_widths = [id_w, floating_w, title_w, cmd_w, cwd_w]
 
     if not first:
         print()
     first = False
 
     print(f'{tab_name}')
-    print('┌' + '─' * (id_w + 2) + '┬' + '─' * (title_w + 2) + '┬' + '─' * (cmd_w + 2) + '┬' + '─' * (cwd_w + 2) + '┐')
-    print('│ PANE_ID' + ' ' * (id_w - 7) + ' │ TITLE' + ' ' * (title_w - 5) + ' │ COMMAND' + ' ' * (cmd_w - 7) + ' │ CWD' + ' ' * (cwd_w - 3) + ' │')
-    print('├' + '─' * (id_w + 2) + '┼' + '─' * (title_w + 2) + '┼' + '─' * (cmd_w + 2) + '┼' + '─' * (cwd_w + 2) + '┤')
+    print(table_border('┌', '┬', '┐', column_widths))
+    print('│ PANE_ID' + ' ' * (id_w - 7) + ' │ FLOATING' + ' ' * (floating_w - 8) + ' │ TITLE' + ' ' * (title_w - 5) + ' │ COMMAND' + ' ' * (cmd_w - 7) + ' │ CWD' + ' ' * (cwd_w - 3) + ' │')
+    if empty_message is not None:
+        print(table_border('├', '┴', '┤', column_widths))
+        empty_content_w = sum(column_widths) + 3 * len(column_widths) - 3
+        display_message = truncate(empty_message, empty_content_w)
+        message_padding = ' ' * (empty_content_w - display_width(display_message))
+        print(f'│ {display_message}{message_padding} │')
+        print('└' + '─' * (empty_content_w + 2) + '┘')
+    else:
+        print(table_border('├', '┼', '┤', column_widths))
 
-    for pid, title, pane_command, pane_cwd in panes:
-        display_title = truncate(title, title_w)
-        display_cmd = truncate(pane_command, cmd_w)
-        display_cwd = truncate(pane_cwd, cwd_w)
-        pad_id = ' ' * (id_w - display_width(pid))
-        pad_title = ' ' * (title_w - display_width(display_title))
-        pad_cmd = ' ' * (cmd_w - display_width(display_cmd))
-        pad_cwd = ' ' * (cwd_w - display_width(display_cwd))
-        print(f'│ {pid}{pad_id} │ {display_title}{pad_title} │ {display_cmd}{pad_cmd} │ {display_cwd}{pad_cwd} │')
+        for pid, floating, title, pane_command, pane_cwd in panes:
+            display_title = truncate(title, title_w)
+            display_cmd = truncate(pane_command, cmd_w)
+            display_cwd = truncate(pane_cwd, cwd_w)
+            pad_id = ' ' * (id_w - display_width(pid))
+            pad_floating = ' ' * (floating_w - display_width(floating))
+            pad_title = ' ' * (title_w - display_width(display_title))
+            pad_cmd = ' ' * (cmd_w - display_width(display_cmd))
+            pad_cwd = ' ' * (cwd_w - display_width(display_cwd))
+            print(f'│ {pid}{pad_id} │ {floating}{pad_floating} │ {display_title}{pad_title} │ {display_cmd}{pad_cmd} │ {display_cwd}{pad_cwd} │')
 
-    print('└' + '─' * (id_w + 2) + '┴' + '─' * (title_w + 2) + '┴' + '─' * (cmd_w + 2) + '┴' + '─' * (cwd_w + 2) + '┘')
+        print(table_border('└', '┴', '┘', column_widths))
 "
