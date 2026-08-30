@@ -29,7 +29,7 @@ _cce_complete() {
 
 	# First word: complete commands
 	if [[ $cword -eq 1 ]]; then
-		mapfile -t COMPREPLY < <(compgen -W 'run list ls add new edit default set-default rm remove delete cp copy rename mv init path help --help -h' -- "$cur")
+		mapfile -t COMPREPLY < <(compgen -W 'run list ls add new set-group edit default set-default rm remove delete cp copy rename mv init path help --help -h' -- "$cur")
 		return
 	fi
 
@@ -66,22 +66,31 @@ _cce_complete() {
 		return
 		;;
 	add | new)
-		# 'add <profile> [--no-edit] [--force]'
+		# 'add <profile> [--group <group>] [--no-edit] [--force]'
 		case "$prev" in
 		add | new)
 			COMPREPLY=() # New profile name, no completion
 			return
 			;;
+		--group)
+			COMPREPLY=() # Group names are free-form
+			return
+			;;
 		--no-edit | --force | -h | --help)
-			mapfile -t COMPREPLY < <(compgen -W '--no-edit --force -h --help' -- "$cur")
+			mapfile -t COMPREPLY < <(compgen -W '--group --no-edit --force -h --help' -- "$cur")
 			return
 			;;
 		*)
 			# After profile name
-			mapfile -t COMPREPLY < <(compgen -W '--no-edit --force -h --help' -- "$cur")
+			mapfile -t COMPREPLY < <(compgen -W '--group --no-edit --force -h --help' -- "$cur")
 			return
 			;;
 		esac
+		;;
+	set-group)
+		# 'set-group <profile>... <group>'
+		mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles)" -- "$cur")
+		return
 		;;
 	edit)
 		# 'edit <profile>'
@@ -117,11 +126,15 @@ _cce_complete() {
 		return
 		;;
 	cp | copy)
-		# 'cp <source> <dest> [--no-edit] [--force]'
+		# 'cp <source> <dest> [--group <group>] [--no-edit] [--force]'
 		case "$prev" in
 		cp | copy)
 			# First arg: source profile
 			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles)" -- "$cur")
+			return
+			;;
+		--group)
+			COMPREPLY=() # Group names are free-form
 			return
 			;;
 		--no-edit | --force | -h | --help)
@@ -131,9 +144,9 @@ _cce_complete() {
 		*)
 			# Check if we already have 2 profile args
 			local profile_count=0
-			for ((i=2; i<cword; i++)); do
+			for ((i = 2; i < cword; i++)); do
 				case "${words[i]}" in
-				--*|-*) ;;
+				--* | -*) ;;
 				*) ((profile_count++)) ;;
 				esac
 			done
@@ -142,7 +155,7 @@ _cce_complete() {
 				COMPREPLY=()
 			else
 				# After both profiles: flags
-				mapfile -t COMPREPLY < <(compgen -W '--no-edit --force -h --help' -- "$cur")
+				mapfile -t COMPREPLY < <(compgen -W '--group --no-edit --force -h --help' -- "$cur")
 			fi
 			return
 			;;
@@ -163,9 +176,9 @@ _cce_complete() {
 		*)
 			# Check if we already have 2 profile args
 			local profile_count=0
-			for ((i=2; i<cword; i++)); do
+			for ((i = 2; i < cword; i++)); do
 				case "${words[i]}" in
-				--*|-*) ;;
+				--* | -*) ;;
 				*) ((profile_count++)) ;;
 				esac
 			done

@@ -17,3 +17,17 @@ _Avoid_: Floating tab
 
 **Floating status**:
 The known floating, known tiled, or unknown placement of a pane. The status is unknown when Zellij does not report whether the pane is floating.
+
+## Claude Code Environment Profiles
+
+**Profile**:
+A named set of environment settings used to start Claude Code.
+
+**Group**:
+An optional label that organizes profiles in listings; profiles without a group belong to the default group, shown as `-`.
+
+**Default group**:
+The implicit group for profiles without a group label.
+
+**Default profile**:
+The profile selected when Claude Code is started without an explicit profile name.
