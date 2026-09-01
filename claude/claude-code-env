@@ -6,8 +6,9 @@ ME="$(basename "$0")"
 CONFIG_DIR="${CLAUDE_CODE_ENV_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-code-env}"
 PROFILES_DIR="$CONFIG_DIR/profiles"
 DEFAULT_FILE="$CONFIG_DIR/default"
-DEFAULT_LINK="$CONFIG_DIR/default.env"
 CLAUDE_BIN="${CLAUDE_CODE_BIN:-claude}"
+# Shell-integration marker line; must match exactly in init/uninit block removal.
+MARKER="# Claude Code default profile"
 
 usage() {
 	cat <<EOF
@@ -23,6 +24,8 @@ Usage:
   $ME cp <source> <dest> [--group <group>]
   $ME rename <old> <new>
   $ME init
+  $ME uninit
+  $ME load [profile]
   $ME path [profile]
 
 Commands:
@@ -39,8 +42,11 @@ Commands:
   cp           Copy an existing profile to a new one. Preserves its group unless --group is used.
   rename       Rename a profile. Updates the default setting if needed.
   rm           Remove a profile. If it is the default, the default setting is cleared.
-  init         Add a source line to your shell rc file so the default profile is
-               loaded automatically when running claude directly.
+  init         Install shell integration: adds an eval line to your shell rc file so the
+               default profile is loaded automatically. Use 'uninit' to remove.
+  uninit       Remove shell integration from all rc files.
+  load         Output shell code to load a profile. Used by the shell integration;
+               also useful manually via eval "\$($ME load [profile])".
   path         Print the config directory or a profile file path.
 
 Environment:
@@ -81,6 +87,7 @@ validate_profile_name() {
 	local profile="$1"
 
 	[[ -n "$profile" ]] || die "profile name is required"
+	[[ "$profile" != "default" ]] || die "reserved profile name: default"
 	[[ "$profile" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid profile name: $profile"
 	[[ "$profile" != "." && "$profile" != ".." ]] || die "invalid profile name: $profile"
 }
@@ -102,13 +109,33 @@ read_default_profile() {
 	fi
 }
 
-update_default_link() {
-	local profile="$1"
-	if [[ -n "$profile" ]]; then
-		ln -sf "$PROFILES_DIR/$profile.env" "$DEFAULT_LINK"
-	else
-		rm -f "$DEFAULT_LINK"
-	fi
+# Remove shell-integration block from an rc file.
+# Block format: optional preceding blank line + marker + one payload line.
+# Returns 0 if a block was removed, 1 if no block found.
+remove_shell_block() {
+	local file="$1"
+	[[ -f "$file" ]] || return 1
+	grep -qF "$MARKER" "$file" 2>/dev/null || return 1
+
+	local tmp="${file}.cce-tmp.$$"
+	awk -v marker="$MARKER" '
+		{ lines[NR] = $0 }
+		END {
+			total = NR
+			for (i = 1; i <= total; i++) {
+				if (lines[i] == marker) {
+					if (i > 1 && lines[i-1] == "") remove[i-1] = 1
+					remove[i] = 1
+					if (i < total) remove[i+1] = 1
+				}
+			}
+			for (i = 1; i <= total; i++) {
+				if (!(i in remove)) print lines[i]
+			}
+		}
+	' "$file" >"$tmp"
+	mv "$tmp" "$file"
+	return 0
 }
 
 require_profile() {
@@ -383,7 +410,6 @@ cmd_default() {
 	require_profile "$1" >/dev/null
 	printf "%s\n" "$1" >"$DEFAULT_FILE"
 	chmod 600 "$DEFAULT_FILE" 2>/dev/null || true
-	update_default_link "$1"
 	echo "Default profile: $1"
 }
 
@@ -398,7 +424,6 @@ cmd_rm() {
 
 	if [[ "$(read_default_profile)" == "$profile" && ! -f "$path" ]]; then
 		rm -f "$DEFAULT_FILE"
-		update_default_link ""
 		echo "Default profile cleared"
 	fi
 }
@@ -504,7 +529,6 @@ cmd_rename() {
 	if [[ "$default_profile" == "$old_name" ]]; then
 		printf "%s\n" "$new_name" >"$DEFAULT_FILE"
 		chmod 600 "$DEFAULT_FILE" 2>/dev/null || true
-		update_default_link "$new_name"
 		echo "Default profile updated: $new_name"
 	fi
 }
@@ -533,22 +557,103 @@ cmd_init() {
 		;;
 	esac
 
-	local marker="# Claude Code default profile"
-	local source_line="[ -f \"$DEFAULT_LINK\" ] && { set -a; source \"$DEFAULT_LINK\"; set +a; }"
+	# Block format (marker line + exactly one payload line):
+	#   # Claude Code default profile
+	#   eval "$('<script-absolute-path>' load)"
+	local script_path
+	script_path="$(realpath "$0")"
+	local payload
+	payload="eval \"\$('${script_path}' load)\""
 
-	if [[ -f "$rc_file" ]] && grep -qF "$DEFAULT_LINK" "$rc_file" 2>/dev/null; then
-		echo "Already configured in $rc_file"
-		return
+	if remove_shell_block "$rc_file"; then
+		# Existing block removed; write new block
+		{
+			echo ""
+			echo "$MARKER"
+			echo "$payload"
+		} >>"$rc_file"
+		echo "Upgraded shell integration in $rc_file"
+	else
+		# No existing block; write new block
+		{
+			echo ""
+			echo "$MARKER"
+			echo "$payload"
+		} >>"$rc_file"
+		echo "Added shell integration to $rc_file"
 	fi
 
-	{
-		echo ""
-		echo "$marker"
-		echo "$source_line"
-	} >>"$rc_file"
-
-	echo "Added source line to $rc_file"
 	echo "Restart your shell or run: source $rc_file"
+}
+
+cmd_uninit() {
+	local rc_files=("$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc")
+	local cleaned=0
+	local rc
+
+	for rc in "${rc_files[@]}"; do
+		if remove_shell_block "$rc"; then
+			echo "Removed shell integration from $rc"
+			cleaned=1
+		fi
+	done
+
+	# Clean up legacy symlink if present
+	if [[ -L "$CONFIG_DIR/default.env" ]]; then
+		rm -f "$CONFIG_DIR/default.env"
+		echo "Removed legacy symlink $CONFIG_DIR/default.env"
+		cleaned=1
+	fi
+
+	if [[ "$cleaned" -eq 0 ]]; then
+		echo "Shell integration not configured"
+	fi
+}
+
+cmd_load() {
+	local profile="${1:-}"
+	local use_default=0
+
+	if [[ -z "$profile" || "$profile" == "default" ]]; then
+		use_default=1
+		profile="$(read_default_profile)"
+		if [[ -z "$profile" ]]; then
+			# No default set: silent exit
+			return 0
+		fi
+		# Format-only validation for default file content (no reserved-name check).
+		# Corrupted default file: silent exit 0; user can self-heal with 'default <p>'.
+		if [[ ! "$profile" =~ ^[A-Za-z0-9._-]+$ || "$profile" == "." || "$profile" == ".." ]]; then
+			return 0
+		fi
+	else
+		validate_profile_name "$profile"
+	fi
+
+	local path
+	path="$PROFILES_DIR/$profile.env"
+	if [[ ! -f "$path" ]]; then
+		if [[ "$use_default" -eq 1 ]]; then
+			# Default profile file missing: silent exit
+			return 0
+		else
+			die "profile not found: $profile"
+		fi
+	fi
+
+	# Clear ANTHROPIC_* / CLAUDE_CODE_* env vars.
+	# Sanitize key names: only emit unset for valid shell identifier names.
+	while IFS='=' read -r key _; do
+		case "$key" in
+		ANTHROPIC_* | CLAUDE_CODE_*)
+			if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+				printf 'unset %s;\n' "$key"
+			fi
+			;;
+		esac
+	done < <(env)
+
+	printf "set -a; . '%s'; set +a\n" "$path"
 }
 
 cmd_path() {
@@ -662,6 +767,12 @@ main() {
 		;;
 	init)
 		cmd_init "$@"
+		;;
+	uninit)
+		cmd_uninit "$@"
+		;;
+	load)
+		cmd_load "$@"
 		;;
 	path)
 		cmd_path "$@"

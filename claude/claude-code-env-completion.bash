@@ -29,7 +29,7 @@ _cce_complete() {
 
 	# First word: complete commands
 	if [[ $cword -eq 1 ]]; then
-		mapfile -t COMPREPLY < <(compgen -W 'run list ls add new set-group edit view show default set-default rm remove delete cp copy rename mv init path help --help -h' -- "$cur")
+		mapfile -t COMPREPLY < <(compgen -W 'run list ls add new set-group edit view show default set-default rm remove delete cp copy rename mv init uninit load path help --help -h' -- "$cur")
 		return
 	fi
 
@@ -206,6 +206,22 @@ _cce_complete() {
 		;;
 	init)
 		# 'init' takes no args
+		COMPREPLY=()
+		return
+		;;
+	uninit)
+		# 'uninit' takes no args
+		COMPREPLY=()
+		return
+		;;
+	load)
+		# 'load [profile]'
+		case "$prev" in
+		load)
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles)" -- "$cur")
+			return
+			;;
+		esac
 		COMPREPLY=()
 		return
 		;;

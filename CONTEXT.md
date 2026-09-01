@@ -31,3 +31,9 @@ The implicit group for profiles without a group label.
 
 **Default profile**:
 The profile selected when Claude Code is started without an explicit profile name.
+
+**Shell integration**:
+A hook in a shell rc file that makes every new interactive shell automatically load the default profile; installed by `init` and removed by `uninit`.
+
+**Default (reserved virtual profile name)**:
+A reserved virtual profile name usable only in `load`, where it resolves to the default profile; it cannot be used as a real profile name.
