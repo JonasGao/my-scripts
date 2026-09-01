@@ -17,6 +17,7 @@ Usage:
   $ME add <profile> [--group <group>] [--no-edit] [--force]
   $ME set-group <profile>... <group>
   $ME edit <profile>
+  $ME view <profile>
   $ME default [profile]
   $ME rm <profile>
   $ME cp <source> <dest> [--group <group>]
@@ -33,6 +34,7 @@ Commands:
                Use --group to assign an optional display group.
   set-group    Assign one group to multiple existing profiles.
   edit         Edit an existing profile.
+  view         Display detailed information about a profile.
   default      Show or set the default profile.
   cp           Copy an existing profile to a new one. Preserves its group unless --group is used.
   rename       Rename a profile. Updates the default setting if needed.
@@ -301,6 +303,35 @@ cmd_add() {
 	if [[ "$edit_after" -eq 1 ]]; then
 		open_editor "$path"
 	fi
+}
+
+cmd_view() {
+	ensure_config_dir
+	[[ $# -eq 1 ]] || die "view requires exactly one profile name"
+
+	local profile="$1"
+	local path
+	path="$(require_profile "$profile")"
+
+	local default_profile
+	default_profile="$(read_default_profile)"
+
+	local group
+	group="$(read_profile_group "$path")"
+	group="$(display_group "$group")"
+
+	local is_default="no"
+	[[ "$profile" == "$default_profile" ]] && is_default="yes"
+
+	echo "Profile: $profile"
+	echo "Path:    $path"
+	echo "Group:   $group"
+	echo "Default: $is_default"
+	echo ""
+	echo "--- Environment Variables ---"
+
+	# Filter out comments and group lines, show only env vars
+	grep -v '^[[:space:]]*#' "$path" | grep -v '^[[:space:]]*$' | grep '=' || echo "(no environment variables set)"
 }
 
 cmd_edit() {
@@ -610,6 +641,9 @@ main() {
 		;;
 	edit)
 		cmd_edit "$@"
+		;;
+	view | show)
+		cmd_view "$@"
 		;;
 	set-group)
 		cmd_set_group "$@"
