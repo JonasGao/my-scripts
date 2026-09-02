@@ -37,3 +37,6 @@ A hook in a shell rc file that makes every new interactive shell automatically l
 
 **Default (reserved virtual profile name)**:
 A reserved virtual profile name usable only in `load`, where it resolves to the default profile; it cannot be used as a real profile name.
+
+**Profile validity flag**:
+A persisted boolean annotation on a profile used only to indicate its status in displays; it does not determine whether the profile can be run or loaded.

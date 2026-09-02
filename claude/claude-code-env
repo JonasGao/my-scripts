@@ -17,6 +17,7 @@ Usage:
   $ME list
   $ME add <profile> [--group <group>] [--no-edit] [--force]
   $ME set-group <profile>... <group>
+  $ME set-valid <profile>... <true|false>
   $ME edit <profile>
   $ME view <profile>
   $ME default [profile]
@@ -32,14 +33,15 @@ Commands:
   run          Load a profile and start Claude Code. Uses the default profile when omitted.
                By default Claude Code is started with --dangerously-skip-permissions.
                Pass --no-skip-permissions to disable that behavior.
-  list         List profiles grouped and mark the default one.
+  list         List profiles grouped, mark the default one, and show validity.
   add          Create a profile file and open it in \$EDITOR unless --no-edit is used.
                Use --group to assign an optional display group.
   set-group    Assign one group to multiple existing profiles.
+  set-valid    Set the display-only validity flag for multiple profiles.
   edit         Edit an existing profile.
   view         Display detailed information about a profile.
   default      Show or set the default profile.
-  cp           Copy an existing profile to a new one. Preserves its group unless --group is used.
+  cp           Copy an existing profile to a new one. Preserves its group and validity unless --group is used.
   rename       Rename a profile. Updates the default setting if needed.
   rm           Remove a profile. If it is the default, the default setting is cleared.
   init         Install shell integration: adds an eval line to your shell rc file so the
@@ -58,6 +60,7 @@ Profile files live in:
   $PROFILES_DIR
 
 Profile format:
+  # valid: true
   # group: work
   ANTHROPIC_API_KEY=sk-ant-...
   export ANTHROPIC_BASE_URL=https://api.example.com
@@ -65,6 +68,7 @@ Profile format:
 Examples:
   $ME add work
   $ME set-group personal staging team-a
+  $ME set-valid work staging false
   $ME default work
   $ME init
   $ME run -- --model opus
@@ -159,6 +163,7 @@ create_profile_template() {
 	old_umask="$(umask)"
 	umask 077
 	cat >"$path" <<'EOF'
+# valid: true
 # Claude Code environment variables.
 # Lines are loaded as a Bash environment file.
 #
@@ -184,8 +189,54 @@ read_profile_group() {
 	done <"$path"
 }
 
+read_profile_valid() {
+	local path="$1" line value
+	while IFS= read -r line || [[ -n "$line" ]]; do
+		if [[ "$line" =~ ^[[:space:]]*#[[:space:]]*valid:[[:space:]]*(.*)$ ]]; then
+			value="${BASH_REMATCH[1]}"
+			value="${value#"${value%%[![:space:]]*}"}"
+			value="${value%"${value##*[![:space:]]}"}"
+			case "$value" in
+			true | false)
+				printf '%s\n' "$value"
+				return
+				;;
+			esac
+			# The first validity metadata line wins; malformed values default to true.
+			printf '%s\n' true
+			return
+		fi
+	done <"$path"
+	printf '%s\n' true
+}
+
+validate_valid_value() {
+	local valid="$1"
+	case "$valid" in
+	true | false) ;;
+	*) die "validity must be true or false: $valid" ;;
+	esac
+}
+
+write_profile_valid() {
+	local path="$1" valid="$2" tmp line
+	validate_valid_value "$valid"
+	tmp="${path}.tmp.$$"
+	{
+		printf '# valid: %s\n' "$valid"
+		while IFS= read -r line || [[ -n "$line" ]]; do
+			if [[ "$line" =~ ^[[:space:]]*#[[:space:]]*valid:[[:space:]]*.*$ ]]; then
+				continue
+			fi
+			printf '%s\n' "$line"
+		done <"$path"
+	} >"$tmp"
+	mv "$tmp" "$path"
+	chmod 600 "$path" 2>/dev/null || true
+}
+
 write_profile_group() {
-	local path="$1" group="$2" tmp line found=0
+	local path="$1" group="$2" tmp line first_line found=0
 	group="${group#"${group%%[![:space:]]*}"}"
 	group="${group%"${group##*[![:space:]]}"}"
 	tmp="${path}.tmp.$$"
@@ -199,10 +250,22 @@ write_profile_group() {
 		fi
 	done <"$path"
 	if [[ "$found" -eq 0 ]]; then
-		{
-			printf '# group: %s\n' "$group"
-			cat "$tmp"
-		} >"${tmp}.new"
+		if IFS= read -r first_line <"$tmp" || [[ -n "$first_line" ]]; then
+			if [[ "$first_line" =~ ^[[:space:]]*#[[:space:]]*valid:[[:space:]]*.*$ ]]; then
+				{
+					printf '%s\n' "$first_line"
+					printf '# group: %s\n' "$group"
+					tail -n +2 "$tmp"
+				} >"${tmp}.new"
+			else
+				{
+					printf '# group: %s\n' "$group"
+					cat "$tmp"
+				} >"${tmp}.new"
+			fi
+		else
+			printf '# group: %s\n' "$group" >"${tmp}.new"
+		fi
 		mv "${tmp}.new" "$tmp"
 	fi
 	mv "$tmp" "$path"
@@ -218,6 +281,14 @@ display_group() {
 	fi
 }
 
+display_valid() {
+	if [[ "$1" == "false" ]]; then
+		printf '%s' '❌'
+	else
+		printf '%s' '✅'
+	fi
+}
+
 display_table() {
 	if command -v column >/dev/null 2>&1; then
 		column -t -s $'\t'
@@ -225,14 +296,14 @@ display_table() {
 		awk -F '\t' '
 		{
 			rows[NR] = $0
-			for (i = 1; i <= 3; i++) {
+			for (i = 1; i <= 4; i++) {
 				if (length($i) > width[i]) width[i] = length($i)
 			}
 		}
 		END {
 			for (row = 1; row <= NR; row++) {
 				split(rows[row], fields, FS)
-				printf "%-*s  %-*s  %s\\n", width[1], fields[1], width[2], fields[2], fields[3]
+				printf "%-*s  %-*s  %-*s  %s\n", width[1], fields[1], width[2], fields[2], width[3], fields[3], fields[4]
 			}
 		}'
 	fi
@@ -253,7 +324,7 @@ cmd_list() {
 		return
 	fi
 
-	local file profile marker group group_key
+	local file profile marker group group_key valid valid_marker
 	local rows=()
 	for file in "${files[@]}"; do
 		profile="$(basename "$file" .env)"
@@ -265,14 +336,16 @@ cmd_list() {
 		if [[ "$profile" == "$default_profile" ]]; then
 			marker="*"
 		fi
+		valid="$(read_profile_valid "$file")"
+		valid_marker="$(display_valid "$valid")"
 		group="$(display_group "$group")"
 		profile="${profile//$'\t'/ }"
 		group="${group//$'\t'/ }"
-		rows+=("$group_key"$'\t'"$marker"$'\t'"$group"$'\t'"$profile")
+		rows+=("$group_key"$'\t'"$marker"$'\t'"$valid_marker"$'\t'"$group"$'\t'"$profile")
 	done
 
-	printf '%s\n' "${rows[@]}" | LC_ALL=C sort -f -s -t $'\t' -k1,1 -k4,4 | cut -f2- | {
-		printf '%s\t%s\t%s\n' '' GROUP NAME
+	printf '%s\n' "${rows[@]}" | LC_ALL=C sort -f -s -t $'\t' -k1,1 -k5,5 | cut -f2- | {
+		printf '%s\t%s\t%s\t%s\n' '' VALID GROUP NAME
 		cat
 	} | display_table
 }
@@ -346,6 +419,10 @@ cmd_view() {
 	local group
 	group="$(read_profile_group "$path")"
 	group="$(display_group "$group")"
+	local valid
+	valid="$(read_profile_valid "$path")"
+	local valid_marker
+	valid_marker="$(display_valid "$valid")"
 
 	local is_default="no"
 	[[ "$profile" == "$default_profile" ]] && is_default="yes"
@@ -353,11 +430,12 @@ cmd_view() {
 	echo "Profile: $profile"
 	echo "Path:    $path"
 	echo "Group:   $group"
+	echo "Valid:   $valid_marker"
 	echo "Default: $is_default"
 	echo ""
 	echo "--- Environment Variables ---"
 
-	# Filter out comments and group lines, show only env vars
+	# Filter out comments and blank lines, show only env vars
 	grep -v '^[[:space:]]*#' "$path" | grep -v '^[[:space:]]*$' | grep '=' || echo "(no environment variables set)"
 }
 
@@ -390,6 +468,28 @@ cmd_set_group() {
 		write_profile_group "$(profile_path "$profile")" "$group"
 	done
 	echo "Group updated: ${profiles[*]} -> $group"
+}
+
+cmd_set_valid() {
+	ensure_config_dir
+	[[ $# -ge 2 ]] || die "set-valid requires at least one profile and a validity value"
+
+	local valid="${!#}"
+	validate_valid_value "$valid"
+	local profile_count=$(($# - 1))
+	local profiles=()
+	local i
+	for ((i = 1; i <= profile_count; i++)); do
+		profiles+=("${!i}")
+		validate_profile_name "${!i}"
+		require_profile "${!i}" >/dev/null
+	done
+
+	local profile
+	for profile in "${profiles[@]}"; do
+		write_profile_valid "$(profile_path "$profile")" "$valid"
+	done
+	echo "Validity updated: ${profiles[*]} -> $valid"
 }
 
 cmd_default() {
@@ -752,6 +852,9 @@ main() {
 		;;
 	set-group)
 		cmd_set_group "$@"
+		;;
+	set-valid)
+		cmd_set_valid "$@"
 		;;
 	default | set-default)
 		cmd_default "$@"
