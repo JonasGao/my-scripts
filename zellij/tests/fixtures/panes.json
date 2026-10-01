@@ -35,6 +35,12 @@
     "tab_id": 1
   },
   {
+    "id": 13,
+    "title": "zellij:session-manager",
+    "is_floating": false,
+    "tab_id": 1
+  },
+  {
     "id": 201,
     "title": "tab-bar",
     "is_floating": false,

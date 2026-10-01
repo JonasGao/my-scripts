@@ -74,6 +74,19 @@ test_default_hides_exact_bar_titles() {
     assert_not_contains "$output" "terminal_102"
 }
 
+test_default_hides_zellij_prefixed_titles() {
+    local output
+    output=$(run_cli)
+
+    assert_not_contains "$output" "zellij:session-manager"
+    assert_not_contains "$output" "terminal_13"
+
+    output=$(run_cli --all --show-bars)
+
+    assert_contains "$output" "zellij:session-manager"
+    assert_contains "$output" "terminal_13"
+}
+
 test_show_bars_restores_bar_panes_in_all_mode() {
     local output
     output=$(run_cli --all --show-bars)
@@ -122,6 +135,8 @@ test_current_mode_shows_filtered_empty_state() {
 
 test_default_hides_exact_bar_titles
 echo "PASS: default hides exact bar titles"
+test_default_hides_zellij_prefixed_titles
+echo "PASS: default hides zellij: prefixed titles"
 test_show_bars_restores_bar_panes_in_all_mode
 echo "PASS: --show-bars restores bar panes in --all mode"
 test_floating_column_shows_three_states

@@ -3,8 +3,8 @@
 # Auto-fits content within terminal width (handles CJK characters)
 #
 # Usage:
-#   list-zellij-panes                    # Show panes in current tab, hiding bar panes and command
-#   list-zellij-panes --show-bars        # Include tab-bar and status-bar panes
+#   list-zellij-panes                    # Show panes in current tab, hiding bar/zellij plugin panes and command
+#   list-zellij-panes --show-bars        # Include tab-bar, status-bar, and zellij:* plugin panes
 #   list-zellij-panes --show-command     # Include command column
 #   list-zellij-panes --all              # Show panes in all tabs
 #   list-zellij-panes --all --show-bars  # Show all panes in all tabs
@@ -112,7 +112,7 @@ for pane in panes_data:
     pane_id = pane.get('id', 0)
     title = pane.get('title', '')
 
-    if not show_bars and title in {'tab-bar', 'status-bar'}:
+    if not show_bars and (title in {'tab-bar', 'status-bar'} or title.startswith('zellij:')):
         filtered_bar_counts[tab_id] = filtered_bar_counts.get(tab_id, 0) + 1
         continue
 
