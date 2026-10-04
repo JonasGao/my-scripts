@@ -1,11 +1,17 @@
 #!/bin/bash
 # gwt - Git Worktree Manager
-# Version: 1.1.0
+# Version: 1.2.0
 # Usage: source gwt <branch-name>
 #        gwtb        # toggle between main repo and worktree
 #        gwtd        # remove current worktree (keep local branch)
+#        gwtc        # re-carry ignored local config into current worktree
+#
+# Carry list: list ignored local-config paths (one per line, relative to the
+# repo root) in "$(git rev-parse --git-common-dir)/gwt-carry.list"; they are
+# copied from the main repo into each new worktree. Disable with
+# GWT_CARRY_ENABLED=false.
 
-GWT_VERSION="1.1.0"
+GWT_VERSION="1.2.0"
 
 # Must be sourced to affect the current shell session (cd)
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
@@ -28,6 +34,14 @@ _gwt_abspath() {
 # Set GWT_CODEGRAPH_ENABLED=false to disable.
 : "${GWT_CODEGRAPH_ENABLED:=true}"
 
+# Configuration: enable/disable carrying ignored local config into worktrees.
+# Set GWT_CARRY_ENABLED=false to disable.
+: "${GWT_CARRY_ENABLED:=true}"
+
+# Name of the carry list file. It lives in the shared git common dir so it is
+# per-repository, visible to every worktree, and never committed.
+_GWT_CARRY_LIST_NAME="gwt-carry.list"
+
 # Helper: initialize or sync codegraph for the current directory
 _gwt_codegraph_init_or_sync() {
     # Check if codegraph feature is enabled
@@ -42,6 +56,101 @@ _gwt_codegraph_init_or_sync() {
     else
         codegraph init
     fi
+}
+
+# Helper: resolve the carry list path inside the shared git common dir
+_gwt_carry_list_path() {
+    local gcd
+    gcd=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
+    [[ -n "$gcd" ]] || return 1
+    gcd=$(_gwt_abspath "$gcd") || return 1
+    echo "$gcd/$_GWT_CARRY_LIST_NAME"
+}
+
+# Helper: carry ignored local-config files from the main repo into a worktree.
+# Usage: _gwt_carry <main_repo> <target_worktree> <mode>
+#   mode = create : fresh worktree; replace any existing target
+#          sync   : only add missing entries (protect worktree edits)
+#          force  : replace existing entries
+_gwt_carry() {
+    local main_repo="$1" target="$2" mode="$3"
+
+    if [[ "$GWT_CARRY_ENABLED" != "true" ]]; then
+        [[ "$mode" != "create" ]] && \
+            echo "gwt carry is disabled (GWT_CARRY_ENABLED=$GWT_CARRY_ENABLED)."
+        return 0
+    fi
+
+    local list_file
+    list_file=$(_gwt_carry_list_path) || return 0
+
+    if [[ ! -f "$list_file" ]]; then
+        if [[ "$mode" != "create" ]]; then
+            echo "No carry list found. Create one at:"
+            echo "  $list_file"
+            echo "One path per line (relative to repo root); '#' comments, trailing '/' for dirs."
+        fi
+        return 0
+    fi
+
+    local count=0 line entry src dst
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Trim surrounding whitespace
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        # Skip blank lines and comments
+        [[ -z "$line" ]] && continue
+        [[ "$line" == \#* ]] && continue
+
+        # Normalize a leading "./" and a trailing slash
+        entry="${line#./}"
+        entry="${entry%/}"
+        [[ -z "$entry" ]] && continue
+
+        # Guardrail: reject absolute paths
+        if [[ "$entry" == /* ]]; then
+            echo "gwt carry: skip absolute path '$entry'" >&2
+            continue
+        fi
+        # Guardrail: reject paths escaping the repo root
+        if [[ "$entry" == ".." || "$entry" == ../* || "$entry" == */../* || "$entry" == */.. ]]; then
+            echo "gwt carry: skip path escaping repo '$entry'" >&2
+            continue
+        fi
+
+        src="$main_repo/$entry"
+        dst="$target/$entry"
+
+        # Guardrail: entry must exist in the carry source
+        if [[ ! -e "$src" ]]; then
+            echo "gwt carry: skip missing '$entry'" >&2
+            continue
+        fi
+        # Guardrail: never carry git-tracked paths
+        if git -C "$main_repo" ls-files --error-unmatch -- "$entry" >/dev/null 2>&1; then
+            echo "gwt carry: skip tracked path '$entry'" >&2
+            continue
+        fi
+
+        # Overwrite policy
+        if [[ -e "$dst" ]]; then
+            if [[ "$mode" == "sync" ]]; then
+                echo "gwt carry: skip existing '$entry' (use --force to overwrite)" >&2
+                continue
+            fi
+            rm -rf "$dst"
+        fi
+
+        mkdir -p "$(dirname "$dst")"
+        if cp -a "$src" "$dst"; then
+            count=$((count + 1))
+        else
+            echo "gwt carry: failed to copy '$entry'" >&2
+        fi
+    done < "$list_file"
+
+    [[ "$count" -gt 0 ]] && echo "Carried $count item(s) from main repo"
+    return 0
 }
 
 # Main function: create or switch to a worktree for the given branch
@@ -129,6 +238,7 @@ gwt() {
         export GWT_LAST_WORKTREE="$current_dir"
         cd "$worktree_path"
         echo "Created worktree from local branch '$branch': $worktree_path"
+        _gwt_carry "$main_repo" "$worktree_path" create
         _gwt_codegraph_init_or_sync
 
     elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
@@ -137,6 +247,7 @@ gwt() {
         export GWT_LAST_WORKTREE="$current_dir"
         cd "$worktree_path"
         echo "Created worktree from remote branch 'origin/$branch': $worktree_path"
+        _gwt_carry "$main_repo" "$worktree_path" create
         _gwt_codegraph_init_or_sync
 
     else
@@ -164,6 +275,7 @@ gwt() {
         export GWT_LAST_WORKTREE="$current_dir"
         cd "$worktree_path"
         echo "Created worktree from base branch '$base_branch' for new branch '$branch': $worktree_path"
+        _gwt_carry "$main_repo" "$worktree_path" create
         _gwt_codegraph_init_or_sync
     fi
 }
@@ -249,6 +361,50 @@ gwtd() {
     echo "Local branch '$branch' is preserved."
 }
 
+# Re-carry ignored local config from the main repo into the current worktree.
+# Run from inside a worktree. Use --force to overwrite files that already exist.
+gwtc() {
+    local force=false
+    if [[ "$1" == "--force" || "$1" == "-f" ]]; then
+        force=true
+    elif [[ -n "$1" ]]; then
+        echo "Usage: gwtc [--force]"
+        return 1
+    fi
+
+    local git_common_dir
+    git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+    if [[ -z "$git_common_dir" ]]; then
+        echo "Error: Current directory is not inside a git repository."
+        return 1
+    fi
+
+    local main_repo
+    if [[ "$(git rev-parse --is-bare-repository 2>/dev/null)" == "true" ]]; then
+        main_repo=$(_gwt_abspath "$git_common_dir")
+    else
+        main_repo=$(_gwt_abspath "$(dirname "$git_common_dir")")
+    fi
+
+    # Resolve the worktree root regardless of the current subdirectory
+    local worktree_root
+    worktree_root=$(git rev-parse --show-toplevel 2>/dev/null)
+    if [[ -z "$worktree_root" ]]; then
+        echo "Error: Cannot determine the worktree root."
+        return 1
+    fi
+    worktree_root=$(_gwt_abspath "$worktree_root")
+
+    if [[ "$worktree_root" == "$main_repo" ]]; then
+        echo "Error: You are in the main repository. Run gwtc from inside a worktree."
+        return 1
+    fi
+
+    local mode="sync"
+    [[ "$force" == "true" ]] && mode="force"
+    _gwt_carry "$main_repo" "$worktree_root" "$mode"
+}
+
 # If sourced with an argument, run gwt immediately
 if [[ -n "$1" ]]; then
     gwt "$1"
@@ -285,9 +441,10 @@ _gwt_complete_branches() {
 # gwt takes a branch name
 complete -F _gwt_complete_branches gwt
 
-# gwtb and gwtd take no arguments — suppress default file completion
+# gwtb, gwtd and gwtc take no branch arguments — suppress default file completion
 _gwt_no_complete() {
     COMPREPLY=()
 }
 complete -F _gwt_no_complete gwtb
 complete -F _gwt_no_complete gwtd
+complete -F _gwt_no_complete gwtc
