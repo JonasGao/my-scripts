@@ -1,0 +1,293 @@
+#!/bin/bash
+# gwt - Git Worktree Manager
+# Version: 1.1.0
+# Usage: source gwt <branch-name>
+#        gwtb        # toggle between main repo and worktree
+#        gwtd        # remove current worktree (keep local branch)
+
+GWT_VERSION="1.1.0"
+
+# Must be sourced to affect the current shell session (cd)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    echo "Error: This script must be sourced, not executed directly."
+    echo "Usage: source $(basename "${BASH_SOURCE[0]}") <branch-name>"
+    exit 1
+fi
+
+# Helper: resolve absolute path
+_gwt_abspath() {
+    cd "$1" >/dev/null 2>&1 || return 1
+    pwd
+}
+
+# Configuration: base directory for all worktrees.
+# Override by exporting GWT_BASE_DIR before sourcing this script.
+: "${GWT_BASE_DIR:=$HOME/clawd}"
+
+# Configuration: enable/disable codegraph auto-init/sync
+# Set GWT_CODEGRAPH_ENABLED=false to disable.
+: "${GWT_CODEGRAPH_ENABLED:=true}"
+
+# Helper: initialize or sync codegraph for the current directory
+_gwt_codegraph_init_or_sync() {
+    # Check if codegraph feature is enabled
+    [[ "$GWT_CODEGRAPH_ENABLED" == "true" ]] || return 0
+
+    # Check if codegraph command exists
+    command -v codegraph &>/dev/null || return 0
+
+    # Check if already initialized (has .codegraph/codegraph.db)
+    if [[ -f ".codegraph/codegraph.db" ]]; then
+        codegraph sync
+    else
+        codegraph init
+    fi
+}
+
+# Main function: create or switch to a worktree for the given branch
+gwt() {
+    local branch="$1"
+
+    # Version query
+    if [[ "$branch" == "--version" || "$branch" == "-v" ]]; then
+        echo "gwt version $GWT_VERSION"
+        return 0
+    fi
+
+    if [[ -z "$branch" ]]; then
+        echo "Usage: gwt <branch-name>"
+        return 1
+    fi
+
+    # Verify we are inside a git repository
+    local git_common_dir
+    git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+    if [[ -z "$git_common_dir" ]]; then
+        echo "Error: Current directory is not inside a git repository."
+        return 1
+    fi
+
+    # Determine main repository path
+    local main_repo
+    if [[ "$(git rev-parse --is-bare-repository 2>/dev/null)" == "true" ]]; then
+        main_repo=$(_gwt_abspath "$git_common_dir")
+    else
+        main_repo=$(_gwt_abspath "$(dirname "$git_common_dir")")
+    fi
+
+    # Check if a worktree for this branch already exists
+    local existing_path
+    existing_path=$(git worktree list --porcelain 2>/dev/null | awk -v branch="$branch" '
+        /^worktree / { path=$2 }
+        /^branch / {
+            b=$2
+            sub(/^refs\/heads\//, "", b)
+            if (b == branch) { print path; exit }
+        }
+    ')
+
+    if [[ -n "$existing_path" ]]; then
+        if [[ -d "$existing_path" ]]; then
+            existing_path=$(_gwt_abspath "$existing_path")
+            local current_dir
+            current_dir=$(_gwt_abspath ".")
+            if [[ "$existing_path" != "$current_dir" ]]; then
+                export GWT_LAST_WORKTREE="$current_dir"
+                cd "$existing_path"
+                echo "Switched to existing worktree: $existing_path"
+                _gwt_codegraph_init_or_sync
+            else
+                echo "Already in worktree for branch '$branch'."
+            fi
+            return 0
+        else
+            # Orphan worktree entry (directory was deleted manually)
+            git worktree prune
+        fi
+    fi
+
+    # Decide where to place the new worktree
+    local repo_name branch_suffix
+    repo_name=$(basename "$main_repo")
+    branch_suffix="${branch##*/}"
+    local worktree_path
+    worktree_path="${GWT_BASE_DIR}/${branch_suffix}/${repo_name}"
+    mkdir -p "${GWT_BASE_DIR}/${branch_suffix}"
+
+    if [[ -e "$worktree_path" ]]; then
+        echo "Error: Path '$worktree_path' already exists but is not a tracked worktree."
+        echo "Please remove it manually or choose a different branch name."
+        return 1
+    fi
+
+    local current_dir
+    current_dir=$(_gwt_abspath ".")
+
+    if git show-ref --verify --quiet "refs/heads/$branch"; then
+        # Local branch exists
+        git -C "$main_repo" worktree add "$worktree_path" "$branch"
+        export GWT_LAST_WORKTREE="$current_dir"
+        cd "$worktree_path"
+        echo "Created worktree from local branch '$branch': $worktree_path"
+        _gwt_codegraph_init_or_sync
+
+    elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        # Remote tracking branch exists
+        git -C "$main_repo" worktree add -b "$branch" --no-track "$worktree_path" "origin/$branch"
+        export GWT_LAST_WORKTREE="$current_dir"
+        cd "$worktree_path"
+        echo "Created worktree from remote branch 'origin/$branch': $worktree_path"
+        _gwt_codegraph_init_or_sync
+
+    else
+        # Neither exists — create from the default base branch
+        local base_branch=""
+
+        if git rev-parse --verify origin/HEAD &>/dev/null; then
+            base_branch=$(git rev-parse --abbrev-ref origin/HEAD | sed 's/^origin\///')
+        fi
+
+        if [[ -z "$base_branch" ]]; then
+            if git show-ref --verify --quiet refs/remotes/origin/main; then
+                base_branch="main"
+            elif git show-ref --verify --quiet refs/remotes/origin/master; then
+                base_branch="master"
+            fi
+        fi
+
+        if [[ -z "$base_branch" ]]; then
+            echo "Error: Cannot determine base branch (no origin/HEAD, origin/main, or origin/master found)."
+            return 1
+        fi
+
+        git -C "$main_repo" worktree add -b "$branch" --no-track "$worktree_path" "origin/$base_branch"
+        export GWT_LAST_WORKTREE="$current_dir"
+        cd "$worktree_path"
+        echo "Created worktree from base branch '$base_branch' for new branch '$branch': $worktree_path"
+        _gwt_codegraph_init_or_sync
+    fi
+}
+
+# Toggle between main repository and the last used worktree
+gwtb() {
+    local git_common_dir
+    git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+    if [[ -z "$git_common_dir" ]]; then
+        echo "Error: Current directory is not inside a git repository."
+        return 1
+    fi
+
+    local main_repo
+    if [[ "$(git rev-parse --is-bare-repository 2>/dev/null)" == "true" ]]; then
+        main_repo=$(_gwt_abspath "$git_common_dir")
+    else
+        main_repo=$(_gwt_abspath "$(dirname "$git_common_dir")")
+    fi
+
+    local current_dir
+    current_dir=$(_gwt_abspath ".")
+
+    if [[ "$current_dir" == "$main_repo" ]]; then
+        # In main repo → jump back to last worktree
+        if [[ -n "$GWT_LAST_WORKTREE" && -d "$GWT_LAST_WORKTREE" ]]; then
+            cd "$GWT_LAST_WORKTREE"
+            echo "Switched to worktree: $GWT_LAST_WORKTREE"
+        else
+            echo "Error: No previous worktree recorded. Use 'gwt <branch>' first."
+            return 1
+        fi
+    else
+        # In a worktree → record position and jump to main repo
+        export GWT_LAST_WORKTREE="$current_dir"
+        cd "$main_repo"
+        echo "Switched to main repository: $main_repo"
+    fi
+}
+
+# Delete the current worktree (from inside the worktree) and return to main repo.
+# The local branch is kept.
+gwtd() {
+    local git_common_dir
+    git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+    if [[ -z "$git_common_dir" ]]; then
+        echo "Error: Current directory is not inside a git repository."
+        return 1
+    fi
+
+    local main_repo
+    if [[ "$(git rev-parse --is-bare-repository 2>/dev/null)" == "true" ]]; then
+        main_repo=$(_gwt_abspath "$git_common_dir")
+    else
+        main_repo=$(_gwt_abspath "$(dirname "$git_common_dir")")
+    fi
+
+    local current_dir
+    current_dir=$(_gwt_abspath ".")
+
+    if [[ "$current_dir" == "$main_repo" ]]; then
+        echo "Error: You are in the main repository. This command should be run from a worktree."
+        return 1
+    fi
+
+    local branch
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+
+    # Jump back to main repo first
+    export GWT_LAST_WORKTREE="$current_dir"
+    cd "$main_repo"
+
+    # Remove the worktree
+    if git worktree remove -f "$current_dir" 2>/dev/null; then
+        echo "Removed worktree: $current_dir"
+    else
+        echo "Warning: 'git worktree remove' failed, force removing directory..."
+        rm -rf "$current_dir"
+        git worktree prune
+        echo "Removed worktree (forced): $current_dir"
+    fi
+
+    echo "Local branch '$branch' is preserved."
+}
+
+# If sourced with an argument, run gwt immediately
+if [[ -n "$1" ]]; then
+    gwt "$1"
+fi
+
+# ------------------------------------------------------------------
+# Bash Completion
+# ------------------------------------------------------------------
+
+_gwt_complete_branches() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    local branches=""
+
+    # Only provide completion when inside a git repository
+    if ! git rev-parse --git-dir &>/dev/null; then
+        return
+    fi
+
+    # Local branches
+    local local_branches
+    local_branches=$(git branch --format='%(refname:short)' 2>/dev/null)
+
+    # Remote branches: strip "origin/" prefix, exclude HEAD
+    local remote_branches
+    remote_branches=$(git branch -r --format='%(refname:short)' 2>/dev/null | \
+        sed '/HEAD/d; s/^origin\///')
+
+    # Merge and deduplicate
+    branches=$(echo "$local_branches" "$remote_branches" | sort -u)
+
+    COMPREPLY=($(compgen -W "$branches" -- "$cur"))
+}
+
+# gwt takes a branch name
+complete -F _gwt_complete_branches gwt
+
+# gwtb and gwtd take no arguments — suppress default file completion
+_gwt_no_complete() {
+    COMPREPLY=()
+}
+complete -F _gwt_no_complete gwtb
+complete -F _gwt_no_complete gwtd
