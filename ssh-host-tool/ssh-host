@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+#
+# ssh-host - Show a host's full configuration from ssh config
+#
+# Display the raw Host block for a given host from ~/.ssh/config (plus
+# options inherited from other matching patterns such as "Host *"), or
+# the fully resolved effective configuration from "ssh -G" as a table.
+#
+# Usage:
+#   ssh-host [options] [host]
+#   ssh-host --help
+#
+# Options:
+#   -e, --effective    Show effective config from "ssh -G" as a table
+#   -l, --list         List all host names found in the config
+#   -F, --config FILE  Use FILE instead of ~/.ssh/config
+#   -h, --help         Show this help message
+#
+# Examples:
+#   ssh-host hlm                   # Show "Host hlm" block + inherited options
+#   ssh-host -e hlm                # Show fully resolved config as a table
+#   ssh-host -l                    # List all configured host names
+#   ssh-host                       # Pick a host interactively with fzf
+#   ssh-host -F ~/.ssh/config1 hlm # Use an alternate config file
+#
+
+set -euo pipefail
+
+# === Constants ===
+readonly SCRIPT_NAME=$(basename "$0")
+readonly VERSION="1.0.0"
+readonly DEFAULT_CONFIG="${HOME}/.ssh/config"
+
+# === Utility Functions ===
+
+# Color output helpers
+red()    { printf '\033[0;31m%s\033[0m\n' "$*" >&2; }
+green()  { printf '\033[0;32m%s\033[0m\n' "$*" >&2; }
+yellow() { printf '\033[0;33m%s\033[0m\n' "$*" >&2; }
+blue()   { printf '\033[0;34m%s\033[0m\n' "$*" >&2; }
+die()    { printf '\033[0;31mERROR: %b\033[0m\n' "$*" >&2; exit 1; }
+warn()   { yellow "WARNING: $*"; }
+info()   { blue "INFO: $*"; }
+
+# Show help message
+show_help() {
+  cat <<-'EOF'
+ssh-host - Show a host's full configuration from ssh config
+
+USAGE:
+    ssh-host [OPTIONS] [HOST]
+
+    With no HOST and fzf available, hosts can be picked interactively.
+
+OPTIONS:
+    -e, --effective    Show effective config from "ssh -G" as a table
+    -l, --list         List all host names found in the config
+    -F, --config FILE  Use FILE instead of ~/.ssh/config
+    -h, --help         Show this help message
+
+OUTPUT:
+    Default output is the raw "Host <name>" block as written in the
+    config file, followed by option lines inherited from other stanzas
+    whose patterns also match the name (e.g. "Host *").
+
+EXAMPLES:
+    # Show the config block for host hlm
+    ssh-host hlm
+
+    # Show the fully resolved effective configuration as a table
+    ssh-host -e hlm
+
+    # List all configured host names
+    ssh-host -l
+
+    # Use an alternate config file
+    ssh-host -F ~/.ssh/config1 hlm
+
+    # Pick a host interactively (requires fzf)
+    ssh-host
+
+VERSION:
+    1.0.0
+EOF
+}
+
+# === Config Parsing ===
+
+# Parsed stanzas (one entry per "Host" line):
+#   STANZA_HOSTLINE  - the raw "Host ..." line, verbatim
+#   STANZA_PATTERNS  - the pattern list, whitespace-separated
+#   STANZA_OPTIONS   - the option lines below it, verbatim
+declare -a STANZA_HOSTLINE=()
+declare -a STANZA_PATTERNS=()
+declare -a STANZA_OPTIONS=()
+
+# Parse an ssh config file into Host stanzas.
+# "Match" blocks and anything outside a Host stanza are ignored.
+parse_config() {
+  local file="$1"
+  local line stripped keyword patterns
+  local collecting=false
+  local -i idx=-1
+
+  STANZA_HOSTLINE=()
+  STANZA_PATTERNS=()
+  STANZA_OPTIONS=()
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # ltrim and skip blank/comment lines
+    stripped="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$stripped" || "$stripped" == \#* ]] && continue
+
+    # First word is the keyword ("Key=Value" also allowed)
+    keyword="${stripped%%[[:space:]=]*}"
+    keyword="${keyword,,}"
+
+    case "$keyword" in
+      host)
+        patterns="${stripped:${#keyword}}"
+        patterns="${patterns#"${patterns%%[![:space:]=]*}"}"
+        idx+=1
+        STANZA_HOSTLINE[idx]="$line"
+        STANZA_PATTERNS[idx]="$patterns"
+        STANZA_OPTIONS[idx]=""
+        collecting=true
+        ;;
+      match)
+        collecting=false
+        ;;
+      *)
+        $collecting && STANZA_OPTIONS[idx]+="$line"$'\n'
+        ;;
+    esac
+  done < "$file"
+}
+
+# Check whether a pattern list contains the name as a literal token.
+stanza_has_exact() {
+  local patterns="$1" name="$2" pat
+  local -a pats=()
+  read -ra pats <<< "$patterns"
+  for pat in "${pats[@]}"; do
+    [[ "$pat" == "$name" ]] && return 0
+  done
+  return 1
+}
+
+# Check whether a host name matches a stanza's pattern list (globs
+# supported, "!" negation excludes the whole stanza).
+stanza_matches() {
+  local patterns="$1" name="$2" pat matched=false
+  local -a pats=()
+  read -ra pats <<< "$patterns"
+  for pat in "${pats[@]}"; do
+    if [[ "$pat" == !* ]]; then
+      # shellcheck disable=SC2053  # unquoted RHS: glob matching is intentional
+      [[ "$name" == ${pat#!} ]] && return 1
+    # shellcheck disable=SC2053  # unquoted RHS: glob matching is intentional
+    elif [[ "$name" == $pat ]]; then
+      matched=true
+    fi
+  done
+  [[ "$matched" == true ]]
+}
+
+# List all literal host names (pattern tokens without glob chars),
+# deduplicated, in config order.
+list_hosts() {
+  local i pat
+  local -a names=()
+  for i in "${!STANZA_PATTERNS[@]}"; do
+    local -a pats=()
+    read -ra pats <<< "${STANZA_PATTERNS[$i]}"
+    for pat in "${pats[@]}"; do
+      [[ "$pat" == !* || "$pat" == *[\*\?\[]* ]] && continue
+      names+=("$pat")
+    done
+  done
+  (( ${#names[@]} )) && printf '%s\n' "${names[@]}" | awk '!seen[$0]++'
+  true
+}
+
+# === Actions ===
+
+# Print the raw Host block plus options inherited from other matching stanzas.
+show_host() {
+  local name="$1"
+  local i found_exact=false
+
+  for i in "${!STANZA_PATTERNS[@]}"; do
+    if stanza_has_exact "${STANZA_PATTERNS[$i]}" "$name"; then
+      printf '%s\n' "${STANZA_HOSTLINE[$i]}"
+      printf '%s' "${STANZA_OPTIONS[$i]}"
+      found_exact=true
+    fi
+  done
+
+  if [[ "$found_exact" == false ]]; then
+    info "no dedicated 'Host $name' block (matched by pattern only)"
+  fi
+
+  # Options inherited from other stanzas whose patterns also match
+  local header_printed=false
+  for i in "${!STANZA_PATTERNS[@]}"; do
+    stanza_has_exact "${STANZA_PATTERNS[$i]}" "$name" && continue
+    stanza_matches "${STANZA_PATTERNS[$i]}" "$name" || continue
+    [[ "$header_printed" == false ]] && { printf '\n# inherited from matching patterns:\n'; header_printed=true; }
+    printf '# %s\n' "${STANZA_HOSTLINE[$i]#"${STANZA_HOSTLINE[$i]%%[![:space:]]*}"}"
+    printf '%s' "${STANZA_OPTIONS[$i]}"
+  done
+}
+
+# Print the fully resolved config from "ssh -G" as an aligned table.
+show_effective() {
+  local name="$1"
+  local -a cmd=(ssh -G)
+  [[ "$CONFIG_FILE" != "$DEFAULT_CONFIG" ]] && cmd+=(-F "$CONFIG_FILE")
+  cmd+=("$name")
+
+  "${cmd[@]}" 2>/dev/null | awk '
+    {
+      key = $1
+      $1 = ""
+      sub(/^ /, "")
+      keys[NR] = key
+      vals[NR] = $0
+      if (length(key) > w) w = length(key)
+      if (length($0) > v) v = length($0)
+    }
+    END {
+      if (NR == 0) exit
+      hw = length("OPTION"); if (hw > w) w = hw
+      total = w + 2 + v; if (total > 72) total = 72
+      sep = ""
+      for (i = 0; i < total; i++) sep = sep "─"
+      printf "%-*s  %s\n", w, "OPTION", "VALUE"
+      print sep
+      for (i = 1; i <= NR; i++) printf "%-*s  %s\n", w, keys[i], vals[i]
+    }'
+}
+
+# === Main ===
+
+EFFECTIVE=false
+LIST=false
+CONFIG_FILE=""
+HOST=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -e|--effective) EFFECTIVE=true; shift ;;
+    -l|--list)      LIST=true; shift ;;
+    -F|--config)
+      [[ $# -ge 2 ]] || die "-F/--config requires a file argument"
+      CONFIG_FILE="$2"; shift 2 ;;
+    -h|--help)      show_help; exit 0 ;;
+    -*)             die "unknown option: $1 (see --help)" ;;
+    *)
+      [[ -n "$HOST" ]] && die "only one host may be given"
+      HOST="$1"; shift ;;
+  esac
+done
+
+CONFIG_FILE="${CONFIG_FILE:-$DEFAULT_CONFIG}"
+[[ -f "$CONFIG_FILE" ]] || die "ssh config not found: $CONFIG_FILE"
+
+parse_config "$CONFIG_FILE"
+
+if $LIST; then
+  list_hosts
+  exit 0
+fi
+
+# No host given: pick interactively with fzf, or show what is available
+if [[ -z "$HOST" ]]; then
+  if command -v fzf &>/dev/null; then
+    HOST=$(list_hosts | fzf \
+        --height=40% --reverse --prompt='ssh-host> ' \
+        --preview="$(readlink -f "${BASH_SOURCE[0]}") {}" \
+        --preview-window=right:50%) || exit 0
+    [[ -n "$HOST" ]] || exit 0
+  else
+    red "no host given (install fzf for interactive selection)"
+    echo "Available hosts:" >&2
+    list_hosts >&2
+    exit 1
+  fi
+fi
+
+# Validate the host against the config
+host_known() {
+  local i
+  for i in "${!STANZA_PATTERNS[@]}"; do
+    stanza_has_exact "${STANZA_PATTERNS[$i]}" "$HOST" && return 0
+    stanza_matches "${STANZA_PATTERNS[$i]}" "$HOST" && return 0
+  done
+  return 1
+}
+host_known || die "host not found in $CONFIG_FILE: $HOST (see: $SCRIPT_NAME --list)"
+
+if $EFFECTIVE; then
+  show_effective "$HOST"
+else
+  show_host "$HOST"
+fi
