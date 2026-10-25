@@ -1,0 +1,824 @@
+#!/usr/bin/env python3
+"""清理无远程分支的本地分支及其 worktree。
+
+终端模式（默认）：列出分支，交互确认后删除。
+Web 模式（--web）：启动一次性本地 Web 服务，在页面上勾选后批量删除。
+"""
+
+import argparse
+import html
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PROTECTED_BRANCHES = {"master", "main", "develop"}
+
+STATUS_LABELS = {
+    "orphan": "无上游",
+    "gone": "远程已删除",
+    "tracking-other": "追踪其他分支",
+    "normal": "正常",
+}
+
+COLOR = {
+    "green": "\033[0;32m",
+    "red": "\033[0;31m",
+    "yellow": "\033[0;33m",
+    "blue": "\033[0;34m",
+    "dim": "\033[2m",
+    "reset": "\033[0m",
+}
+
+
+def c(text, color, enabled=True):
+    if not enabled:
+        return text
+    return f"{COLOR[color]}{text}{COLOR['reset']}"
+
+
+def git(repo, *args, timeout=None):
+    """运行 git 命令，返回 (returncode, stdout)。不经 shell。"""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return 124, ""
+    return proc.returncode, proc.stdout
+
+
+class Branch:
+    def __init__(self, name):
+        self.name = name
+        self.upstream = ""
+        self.track = ""
+        self.ahead = 0
+        self.behind = 0
+        self.worktree = ""
+        self.commit_time = ""
+        self.commit_author = ""
+        self.unpushed = 0
+        self.dirty = False
+        self.dirty_files = []
+        self.status = "normal"
+        self.protected = ""
+
+    def dirty_diff(self, limit=2000):
+        """返回工作区未提交改动的 diff 文本（含未跟踪文件的内容）。"""
+        if not self.worktree:
+            return ""
+        rc, out = git(self.worktree, "diff", "HEAD")
+        if rc != 0:
+            rc, out = git(self.worktree, "diff")
+        chunks = [out] if rc == 0 and out.strip() else []
+
+        for line in self.dirty_files:
+            if not line.startswith("??"):
+                continue
+            name = line[3:]
+            path = os.path.join(self.worktree, name)
+            if not os.path.isfile(path):
+                chunks.append(f"新增文件（未跟踪）: {name}\n")
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    content = fh.read()
+            except OSError as exc:
+                chunks.append(f"新增文件（未跟踪）: {name}\n读取失败: {exc}\n")
+                continue
+            chunks.append(f"新增文件（未跟踪）: {name}\n")
+            for row in content.splitlines():
+                chunks.append(f"+{row}")
+            chunks.append("")
+
+        if not chunks:
+            return ""
+        lines = "\n".join(chunks).splitlines()
+        if len(lines) > limit:
+            lines = lines[:limit] + [f"... (已截断，共 {len(lines)} 行)"]
+        return "\n".join(lines)
+
+    @property
+    def is_orphan(self):
+        return self.status in ("orphan", "gone")
+
+    @property
+    def warning(self):
+        if self.dirty:
+            return "有未提交改动（删除会一并丢弃）"
+        return ""
+
+    def as_dict(self):
+        return {
+            "name": self.name,
+            "upstream": self.upstream,
+            "track": self.track,
+            "ahead": self.ahead,
+            "behind": self.behind,
+            "worktree": self.worktree,
+            "commit_time": self.commit_time,
+            "commit_author": self.commit_author,
+            "unpushed": self.unpushed,
+            "dirty": self.dirty,
+            "status": self.status,
+            "status_label": STATUS_LABELS.get(self.status, self.status),
+            "protected": self.protected,
+        }
+
+
+def parse_track(track):
+    """把 'ahead 2, behind 1' 这类 upstream:track 文本解析成 (ahead, behind)。"""
+    ahead = behind = 0
+    for part in track.split(","):
+        part = part.strip()
+        if part.startswith("ahead "):
+            ahead = int(part[6:] or 0)
+        elif part.startswith("behind "):
+            behind = int(part[7:] or 0)
+    return ahead, behind
+
+
+def worktree_map(repo):
+    """返回 (branch -> worktree path, main worktree path)。"""
+    rc, out = git(repo, "worktree", "list", "--porcelain")
+    if rc != 0:
+        return {}, ""
+    mapping = {}
+    main_path = ""
+    path = ""
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree "):]
+            if not main_path:
+                main_path = path
+        elif line.startswith("branch refs/heads/"):
+            mapping[line[len("branch refs/heads/"):]] = path
+    return mapping, main_path
+
+
+def scan(repo, current_branch):
+    mapping, _ = worktree_map(repo)
+
+    rc, out = git(
+        repo,
+        "for-each-ref",
+        "--format=%(refname:short)%00%(upstream:short)%00%(upstream:track)%00%(committerdate:iso-strict)%00%(authorname)",
+        "refs/heads/",
+    )
+    if rc != 0:
+        print("错误: 无法读取分支列表", file=sys.stderr)
+        sys.exit(1)
+
+    branches = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\0")
+        if len(fields) < 5:
+            continue
+        name, upstream, track, commit_time, author = fields[:5]
+        b = Branch(name)
+        b.upstream = upstream
+        b.track = track
+        b.commit_time = commit_time
+        b.commit_author = author
+        b.ahead, b.behind = parse_track(track)
+        b.worktree = mapping.get(name, "")
+
+        if not upstream:
+            b.status = "orphan"
+        elif "gone" in track:
+            b.status = "gone"
+        else:
+            remote_branch = upstream.split("/", 1)[-1]
+            b.status = "normal" if remote_branch == name else "tracking-other"
+
+        rc_count, count_out = git(
+            repo, "rev-list", "--count", f"refs/heads/{name}", "--not", "--remotes"
+        )
+        if rc_count == 0 and count_out.strip():
+            b.unpushed = int(count_out.strip())
+
+        if b.worktree:
+            rc_st, st_out = git(repo, "-C", b.worktree, "status", "--porcelain")
+            if rc_st == 0 and st_out.strip():
+                b.dirty = True
+                b.dirty_files = [line for line in st_out.splitlines() if line.strip()]
+
+        if name in PROTECTED_BRANCHES:
+            b.protected = "主干分支"
+        elif name == current_branch:
+            b.protected = "当前分支"
+        elif b.unpushed > 0:
+            b.protected = f"{b.unpushed} 个未推送 commit"
+
+        branches.append(b)
+
+    branches.sort(key=lambda b: (0 if b.is_orphan else 1, b.name))
+    return branches
+
+
+def deletion_plan(branch, main_worktree, repo):
+    """返回该分支要执行的步骤列表（人类可读）。"""
+    steps = []
+    if branch.worktree and branch.worktree != main_worktree:
+        steps.append(f"git worktree remove -f {branch.worktree}")
+    steps.append(f"git branch -D {branch.name}")
+    return steps
+
+
+def delete_branch(repo, branch, main_worktree):
+    """执行删除，返回 (ok, message)。"""
+    if branch.worktree and branch.worktree != main_worktree:
+        path = branch.worktree
+        if os.path.isdir(path):
+            rc, _ = git(repo, "worktree", "remove", "-f", path)
+            if rc != 0:
+                shutil.rmtree(path, ignore_errors=True)
+                git(repo, "worktree", "prune")
+        else:
+            git(repo, "worktree", "prune")
+
+    rc, out = git(repo, "branch", "-D", branch.name)
+    if rc != 0:
+        return False, out.strip() or "git branch -D 失败"
+    return True, ""
+
+
+def print_branch_table(branches, color):
+    for b in branches:
+        label = STATUS_LABELS.get(b.status, b.status)
+        mark = "x" if b.is_orphan else "-"
+        if b.is_orphan:
+            head = c(f"[{mark}] {b.name}", "green", color)
+        elif b.protected:
+            head = c(f"[{mark}] {b.name}", "dim", color)
+        else:
+            head = f"[{mark}] {b.name}"
+
+        details = [label]
+        if b.upstream:
+            track = []
+            if b.ahead:
+                track.append(f"↑{b.ahead}")
+            if b.behind:
+                track.append(f"↓{b.behind}")
+            details.append(b.upstream + (" " + " ".join(track) if track else ""))
+        if b.worktree:
+            details.append(f"worktree: {b.worktree}")
+        if b.commit_time:
+            details.append(b.commit_time[:19].replace("T", " "))
+        if b.commit_author:
+            details.append(b.commit_author)
+        if b.unpushed:
+            details.append(f"未推送 {b.unpushed}")
+
+        print(f"  {head}")
+        print(f"      {c(' | '.join(details), 'dim', color)}")
+        if b.protected:
+            print(f"      {c('保护: ' + b.protected, 'yellow', color)}")
+        if b.warning:
+            print(f"      {c('⚠ ' + b.warning, 'yellow', color)}")
+
+
+def fetch_prune(repo):
+    print("正在 git fetch --prune ...", end="", flush=True)
+    rc, _ = git(repo, "fetch", "--prune", timeout=15)
+    if rc == 124:
+        print(c(" 超时，按本地已知状态判定", "yellow"))
+        return False
+    if rc != 0:
+        print(c(" 失败，按本地已知状态判定", "yellow"))
+        return False
+    print(c(" 完成", "green"))
+    return True
+
+
+def cleanable(branches):
+    """可清理的分支：孤儿且未被保护规则拦住。"""
+    return [b for b in branches if b.is_orphan and not b.protected]
+
+
+def run_terminal(repo, branches, main_worktree, dry_run, color):
+    orphans = cleanable(branches)
+    if not orphans:
+        print("没有需要清理的无远程分支的本地分支。")
+        print()
+        print(c("提示: 有上游但没有 worktree 的 feature 分支可能已合并，可手动检查。", "dim", color))
+        return 0
+
+    print(f"发现 {len(orphans)} 个需要删除的分支:")
+    for b in orphans:
+        line = f"  - {b.name}  ({STATUS_LABELS[b.status]})"
+        if b.warning:
+            line += c(f"  ⚠ {b.warning}", "yellow", color)
+        print(line)
+        if b.dirty and b.dirty_files:
+            for entry in b.dirty_files[:10]:
+                print(f"      {c(entry, 'dim', color)}")
+            if len(b.dirty_files) > 10:
+                print(f"      {c(f'... 另有 {len(b.dirty_files) - 10} 个文件', 'dim', color)}")
+    print()
+
+    if dry_run:
+        print(c("--dry-run: 以下命令不会执行", "yellow", color))
+        for b in orphans:
+            for step in deletion_plan(b, main_worktree, repo):
+                print(f"  {step}")
+        return 0
+
+    try:
+        answer = input("确认删除以上分支及其 worktree 吗？[y/N] ").strip()
+    except EOFError:
+        answer = ""
+    print()
+    if answer.lower() != "y":
+        print("已取消清理。")
+        return 0
+
+    ok_count = 0
+    failures = []
+    for b in orphans:
+        ok, msg = delete_branch(repo, b, main_worktree)
+        if ok:
+            ok_count += 1
+            print(c(f"  ✓ 已删除 {b.name}", "green", color))
+        else:
+            failures.append((b.name, msg))
+            print(c(f"  ✗ 删除 {b.name} 失败: {msg}", "red", color))
+
+    print()
+    print(f"完成: 成功 {ok_count} 个" + (f"，失败 {len(failures)} 个" if failures else ""))
+    return 1 if failures else 0
+
+
+PAGE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>清理孤儿分支 - {repo_name}</title>
+<style>
+  :root {{ color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --muted: #666; --line: #e3e3e3; --accent: #0a7; --danger: #c33; --chip: #f2f2f2; }}
+  @media (prefers-color-scheme: dark) {{ :root {{ --bg: #16181c; --fg: #e6e6e6; --muted: #9aa0a6; --line: #2c2f36; --accent: #3ddc97; --danger: #ff6b6b; --chip: #23262d; }} }}
+  * {{ box-sizing: border-box; }}
+  body {{ margin: 0; padding: 24px; font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }}
+  h1 {{ font-size: 20px; margin: 0 0 4px; }}
+  .sub {{ color: var(--muted); margin-bottom: 20px; }}
+  .toolbar {{ display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  th, td {{ text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }}
+  th {{ font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }}
+  tr.protected {{ opacity: .5; }}
+  tr.orphan td:first-child {{ font-weight: 600; }}
+  .chip {{ display: inline-block; padding: 1px 7px; border-radius: 10px; background: var(--chip); font-size: 12px; color: var(--muted); }}
+  .chip.orphan, .chip.gone {{ color: var(--accent); }}
+  .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }}
+  .muted {{ color: var(--muted); }}
+  .warn {{ color: var(--danger); }}
+  button {{ font: inherit; padding: 9px 20px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: #062; font-weight: 600; cursor: pointer; }}
+  button:disabled {{ opacity: .4; cursor: not-allowed; }}
+  button.ghost {{ background: transparent; border-color: var(--line); color: var(--muted); }}
+  .result {{ margin-bottom: 20px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; }}
+  .result li {{ margin: 3px 0; }}
+  .actions {{ display: flex; gap: 10px; align-items: center; margin-top: 20px; }}
+</style>
+</head>
+<body>
+<h1>清理孤儿分支</h1>
+<div class="sub">{repo_name} · {branch_count} 个本地分支 · {orphan_count} 个待清理</div>
+{result}
+<form method="POST" action="{action}">
+<div class="toolbar">
+  <label><input type="checkbox" id="only-orphan" checked onchange="filterRows()"> 只看孤儿</label>
+  <span class="muted" id="counter"></span>
+</div>
+<table>
+<thead><tr><th style="width:36px"></th><th>分支</th><th>状态</th><th>上游</th><th>worktree</th><th>最后提交</th><th>备注</th></tr></thead>
+<tbody>
+{rows}
+</tbody>
+</table>
+<div class="actions">
+  <button type="submit">{button_label}</button>
+  <button type="button" class="ghost" onclick="quit()">{quit_label}</button>
+</div>
+</form>
+<script>
+function filterRows() {{
+  const only = document.getElementById('only-orphan').checked;
+  let shown = 0;
+  document.querySelectorAll('tbody tr').forEach(tr => {{
+    const isOrphan = tr.dataset.orphan === '1';
+    const hide = only && !isOrphan;
+    tr.style.display = hide ? 'none' : '';
+    if (!hide) shown++;
+  }});
+  updateCounter();
+}}
+function updateCounter() {{
+  const n = document.querySelectorAll('tbody input[type=checkbox]:checked').length;
+  document.getElementById('counter').textContent = n ? `已选 ${{n}} 项` : '未选择';
+}}
+function quit() {{
+  if (!confirm('退出会关闭服务，未提交的勾选不会生效。确定退出吗？')) return;
+  fetch('/quit', {{ method: 'POST' }}).then(() => {{
+    document.body.innerHTML = '<div style="padding:40px 24px;font:14px/1.6 ui-sans-serif,system-ui,sans-serif">'
+      + '<strong>服务已关闭。</strong><br>该页面可以关闭了。'
+      + '</div>';
+    window.close();
+  }}).catch(() => window.close());
+}}
+document.querySelectorAll('tbody input[type=checkbox]').forEach(cb => {{
+  cb.addEventListener('change', updateCounter);
+}});
+filterRows();
+updateCounter();
+</script>
+</body>
+</html>
+"""
+
+ROW = """<tr class="{row_class}" data-orphan="{is_orphan}">
+<td><input type="checkbox" name="branch" value="{name}" {checked} {disabled}></td>
+<td class="mono">{name}</td>
+<td><span class="chip {status}">{status_label}</span></td>
+<td class="mono muted">{upstream}</td>
+<td class="mono muted">{worktree}</td>
+<td class="muted">{commit}</td>
+<td class="warn">{notes}</td>
+</tr>"""
+
+
+def render_page(repo, branches, result_html="", dry_run=False):
+    rows = []
+    for b in branches:
+        show_upstream = html.escape(b.upstream)
+        if b.ahead or b.behind:
+            marks = []
+            if b.ahead:
+                marks.append(f"↑{b.ahead}")
+            if b.behind:
+                marks.append(f"↓{b.behind}")
+            show_upstream += " " + " ".join(marks)
+        commit = html.escape(b.commit_time[:19].replace("T", " "))
+        if b.commit_author:
+            commit += f"<br><span class=\"muted\">{html.escape(b.commit_author)}</span>"
+        notes = []
+        if b.protected:
+            notes.append(f"保护: {html.escape(b.protected)}")
+        if b.warning:
+            notes.append(html.escape(b.warning))
+        if b.dirty:
+            safe = urllib.parse.quote(b.name)
+            notes.append(f'<a href="/diff?branch={safe}">查看改动</a>')
+        rows.append(
+            ROW.format(
+                row_class="orphan" if b.is_orphan else ("protected" if b.protected else ""),
+                is_orphan="1" if b.is_orphan else "0",
+                name=html.escape(b.name),
+                checked="checked" if (b.is_orphan and not b.protected) else "",
+                disabled="disabled" if b.protected else "",
+                status=html.escape(b.status),
+                status_label=html.escape(STATUS_LABELS.get(b.status, b.status)),
+                upstream=show_upstream + (f"<br>未推送 {b.unpushed}" if b.unpushed else ""),
+                worktree=html.escape(b.worktree),
+                commit=commit,
+                notes="<br>".join(notes),
+            )
+        )
+
+    return PAGE.format(
+        repo_name=html.escape(os.path.basename(repo)),
+        branch_count=len(branches),
+        orphan_count=len(cleanable(branches)),
+        rows="\n".join(rows),
+        result=result_html,
+        action="/delete" if not dry_run else "/preview",
+        button_label="预览将要执行的命令" if dry_run else "删除勾选的分支",
+        quit_label="退出",
+    )
+
+
+def render_result(items, dry_run):
+    if dry_run:
+        lines = ['<div class="result"><strong>将要执行（未执行）</strong><ul>']
+        for name, steps in items:
+            lines.append(f'<li><span class="mono">{html.escape(name)}</span><ul>')
+            for step in steps:
+                lines.append(f'<li class="mono muted">{html.escape(step)}</li>')
+            lines.append("</ul></li>")
+        lines.append("</ul></div>")
+        return "".join(lines)
+
+    ok = [n for n, success, _ in items if success]
+    failed = [(n, m) for n, success, m in items if not success]
+    lines = [f'<div class="result"><strong>完成：成功 {len(ok)} 项']
+    if failed:
+        lines.append(f'，<span class="warn">失败 {len(failed)} 项</span>')
+    lines.append("</strong><ul>")
+    for name in ok:
+        lines.append(f'<li>✓ <span class="mono">{html.escape(name)}</span></li>')
+    for name, msg in failed:
+        lines.append(
+            f'<li class="warn">✗ <span class="mono">{html.escape(name)}</span> — {html.escape(msg)}</li>'
+        )
+    lines.append("</ul></div>")
+    return "".join(lines)
+
+
+def render_diff_page(branch):
+    files = []
+    for line in branch.dirty_files:
+        status = line[:2]
+        path = line[3:]
+        files.append(
+            f'<li><span class="mono status">{html.escape(status)}</span> '
+            f'<span class="mono">{html.escape(path)}</span></li>'
+        )
+
+    diff_text = branch.dirty_diff()
+    if diff_text:
+        hunks = []
+        for line in diff_text.splitlines():
+            cls = ""
+            if line.startswith("+++") or line.startswith("---"):
+                cls = "meta"
+            elif line.startswith("+"):
+                cls = "add"
+            elif line.startswith("-"):
+                cls = "del"
+            elif line.startswith("@@"):
+                cls = "hunk"
+            hunks.append(f'<span class="{cls}">{html.escape(line)}</span>')
+        diff_html = f'<pre class="diff">{"".join(hunks)}</pre>'
+    else:
+        diff_html = '<p class="muted">没有可显示的 diff（可能是未跟踪文件或改动已被暂存）。</p>'
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>未提交改动 - {html.escape(branch.name)}</title>
+<style>
+  :root {{ color-scheme: light dark; --bg:#fff; --fg:#1a1a1a; --muted:#666; --line:#e3e3e3; --add:#e6f7ed; --del:#fde8e8; --hunk:#eef2ff; }}
+  @media (prefers-color-scheme: dark) {{ :root {{ --bg:#16181c; --fg:#e6e6e6; --muted:#9aa0a6; --line:#2c2f36; --add:#12301f; --del:#3a1a1a; --hunk:#1b2140; }} }}
+  body {{ margin:0; padding:24px; font:14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; background:var(--bg); color:var(--fg); }}
+  h1 {{ font-size:18px; margin:0 0 4px; }}
+  .sub {{ color:var(--muted); margin-bottom:16px; }}
+  ul {{ padding-left:20px; }}
+  .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }}
+  .status {{ display:inline-block; width:2.2em; color:var(--muted); }}
+  pre.diff {{ overflow-x:auto; border:1px solid var(--line); border-radius:8px; padding:12px; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; }}
+  pre.diff span {{ display:block; white-space:pre; }}
+  .add {{ background:var(--add); }}
+  .del {{ background:var(--del); }}
+  .hunk {{ background:var(--hunk); color:var(--muted); }}
+  .meta {{ color:var(--muted); }}
+  .muted {{ color:var(--muted); }}
+  a.back {{ display:inline-block; margin-bottom:16px; color:inherit; }}
+</style>
+</head>
+<body>
+<a class="back" href="/">← 返回列表</a>
+<h1>未提交改动</h1>
+<div class="sub">{html.escape(branch.name)} · worktree: <span class="mono">{html.escape(branch.worktree)}</span></div>
+<h2 style="font-size:14px">文件（{len(branch.dirty_files)}）</h2>
+<ul>{"".join(files)}</ul>
+<h2 style="font-size:14px">diff</h2>
+{diff_html}
+</body>
+</html>
+"""
+
+
+def make_handler(repo, branches, main_worktree, dry_run, state):
+    by_name = {b.name: b for b in branches}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            pass
+
+        def _send(self, code, body, ctype="text/html; charset=utf-8"):
+            data = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            if parsed.path == "/diff":
+                query = urllib.parse.parse_qs(parsed.query)
+                name = (query.get("branch") or [""])[0]
+                b = by_name.get(name)
+                if b is None:
+                    self._send(404, "分支不存在", "text/plain; charset=utf-8")
+                    return
+                self._send(200, render_diff_page(b))
+                return
+            if parsed.path != "/":
+                self._send(404, "not found", "text/plain; charset=utf-8")
+                return
+            self._send(200, render_page(repo, branches, dry_run=dry_run))
+
+        def do_POST(self):
+            if state["done"]:
+                self._send(409, "本轮已处理完毕", "text/plain; charset=utf-8")
+                return
+            path = self.path.split("?")[0]
+            if path == "/quit":
+                state["done"] = True
+                state["exit"] = 0
+                self._send(200, "已退出", "text/plain; charset=utf-8")
+                print(c("收到退出请求，服务已关闭。", "yellow"))
+                return
+            if path not in ("/delete", "/preview"):
+                self._send(404, "not found", "text/plain; charset=utf-8")
+                return
+
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length).decode("utf-8", "replace")
+            selected = urllib.parse.parse_qs(raw).get("branch", [])
+
+            targets = []
+            for name in selected:
+                b = by_name.get(name)
+                if b is None:
+                    continue
+                if b.protected:
+                    print(f"跳过受保护分支: {name} ({b.protected})", file=sys.stderr)
+                    continue
+                targets.append(b)
+
+            if not targets:
+                self._send(200, render_page(repo, branches, '<div class="result warn">未选择任何可删除的分支</div>', dry_run))
+                return
+
+            state["done"] = True
+
+            if dry_run:
+                items = [(b.name, deletion_plan(b, main_worktree, repo)) for b in targets]
+                self._send(200, render_page(repo, branches, render_result(items, True), dry_run))
+                print()
+                print(c("预览（未执行）:", "yellow"))
+                for name, steps in items:
+                    print(f"  {name}")
+                    for step in steps:
+                        print(f"    {step}")
+                print()
+                state["exit"] = 0
+                return
+
+            items = []
+            for b in targets:
+                steps = deletion_plan(b, main_worktree, repo)
+                ok, msg = delete_branch(repo, b, main_worktree)
+                items.append((b.name, ok, msg))
+                mark = c("✓", "green") if ok else c("✗", "red")
+                print(f"  {mark} {b.name}" + (f" — {msg}" if msg else ""))
+
+            self._send(200, render_page(repo, branches, render_result(items, False), dry_run))
+
+            ok_count = sum(1 for _, success, _ in items if success)
+            failed = [(n, m) for n, success, m in items if not success]
+            print()
+            print(f"完成: 成功 {ok_count} 个" + (f"，失败 {len(failed)} 个" if failed else ""))
+            for name, msg in failed:
+                print(f"  失败 {name}: {msg}")
+            print()
+            state["exit"] = 1 if failed else 0
+
+    return Handler
+
+
+def lan_urls(port):
+    urls = []
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = info[4][0]
+            if ip.startswith("127."):
+                continue
+            urls.append(f"http://{ip}:{port}/")
+    except OSError:
+        pass
+    deduped = []
+    for url in urls:
+        if url not in deduped:
+            deduped.append(url)
+    return deduped
+
+
+def bind_server(bind_addr, port, handler):
+    if port:
+        try:
+            return ThreadingHTTPServer((bind_addr, port), handler), port
+        except OSError:
+            print(c(f"端口 {port} 不可用，改用随机端口", "yellow"))
+    srv = ThreadingHTTPServer((bind_addr, 0), handler)
+    return srv, srv.server_address[1]
+
+
+def run_web(repo, branches, main_worktree, bind_addr, port, dry_run, color):
+    orphans = cleanable(branches)
+    if not orphans:
+        print("没有需要清理的无远程分支的本地分支。")
+        print()
+        print(c("提示: 有上游但没有 worktree 的 feature 分支可能已合并，可手动检查。", "dim", color))
+        return 0
+
+    state = {"done": False, "exit": 0}
+    handler = make_handler(repo, branches, main_worktree, dry_run, state)
+    server, actual_port = bind_server(bind_addr, port, handler)
+
+    print()
+    print(c("Web 服务已启动", "green"))
+    print(f"  http://127.0.0.1:{actual_port}/")
+    for url in lan_urls(actual_port):
+        print(f"  {url}")
+    print()
+    print(c("注意: 服务无认证，同网段知道地址的人都能提交删除请求。", "yellow"))
+    print(c("      操作完成后进程会自动退出。", "yellow"))
+    print()
+
+    try:
+        while not state["done"]:
+            server.handle_request()
+    except KeyboardInterrupt:
+        print("\n已中断。")
+        server.server_close()
+        return 130
+
+    server.server_close()
+    return state["exit"]
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="清理无远程分支的本地分支及其 worktree",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""示例:
+  cleanup-orphan-branches                  # 当前仓库，终端交互
+  cleanup-orphan-branches ~/repo --web     # 指定仓库，网页操作
+  cleanup-orphan-branches --web --port 8080 --bind 192.168.1.10
+  cleanup-orphan-branches --dry-run        # 只预览，不执行
+""",
+    )
+    parser.add_argument("repo", nargs="?", default=".", help="仓库路径（默认当前目录）")
+    parser.add_argument("--web", action="store_true", help="启动网页界面进行勾选")
+    parser.add_argument("--dry-run", action="store_true", help="只列出将要执行的命令，不执行")
+    parser.add_argument("--port", type=int, default=0, help="Web 服务端口（默认随机）")
+    parser.add_argument("--bind", default="0.0.0.0", help="Web 服务绑定地址（默认 0.0.0.0）")
+    parser.add_argument("--no-fetch", action="store_true", help="跳过启动时的 git fetch --prune")
+    args = parser.parse_args()
+
+    color = sys.stdout.isatty()
+
+    repo = os.path.abspath(args.repo)
+    if not os.path.isdir(repo):
+        print(f"错误: 目录不存在: {repo}", file=sys.stderr)
+        return 1
+    rc, _ = git(repo, "rev-parse", "--git-dir")
+    if rc != 0:
+        print(f"错误: 不是 git 仓库: {repo}", file=sys.stderr)
+        return 1
+
+    print("=" * 40)
+    print(f"仓库: {os.path.basename(repo)}")
+    print("=" * 40)
+    print()
+
+    if not args.no_fetch:
+        fetch_prune(repo)
+        print()
+
+    rc, out = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    current_branch = out.strip() if rc == 0 else ""
+
+    print("检查本地分支状态...")
+    print()
+    branches = scan(repo, current_branch)
+    print_branch_table(branches, color)
+    print()
+
+    _, main_worktree = worktree_map(repo)
+
+    if args.web:
+        return run_web(repo, branches, main_worktree, args.bind, args.port, args.dry_run, color)
+    return run_terminal(repo, branches, main_worktree, args.dry_run, color)
+
+
+if __name__ == "__main__":
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.exit(main())
