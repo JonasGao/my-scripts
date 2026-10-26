@@ -290,30 +290,24 @@ gwt() {
         _gwt_codegraph_init_or_sync
 
     else
-        # Neither exists — create from the default base branch
-        local base_branch=""
-
-        if git rev-parse --verify origin/HEAD &>/dev/null; then
-            base_branch=$(git rev-parse --abbrev-ref origin/HEAD | sed 's/^origin\///')
-        fi
-
-        if [[ -z "$base_branch" ]]; then
-            if git show-ref --verify --quiet refs/remotes/origin/main; then
-                base_branch="main"
-            elif git show-ref --verify --quiet refs/remotes/origin/master; then
-                base_branch="master"
-            fi
-        fi
-
-        if [[ -z "$base_branch" ]]; then
-            echo "Error: Cannot determine base branch (no origin/HEAD, origin/main, or origin/master found)."
+        # Neither exists — branch off the branch currently checked out
+        local base_ref base_desc
+        base_ref=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        if [[ -z "$base_ref" ]]; then
+            echo "Error: Cannot determine the current branch to create '$branch' from."
             return 1
         fi
+        if [[ "$base_ref" == "HEAD" ]]; then
+            base_ref=$(git rev-parse HEAD) || return 1
+            base_desc="detached HEAD ($base_ref)"
+        else
+            base_desc="'$base_ref'"
+        fi
 
-        git -C "$main_repo" worktree add -b "$branch" --no-track "$worktree_path" "origin/$base_branch"
+        git -C "$main_repo" worktree add -b "$branch" --no-track "$worktree_path" "$base_ref"
         export GWT_LAST_WORKTREE="$current_dir"
         cd "$worktree_path"
-        echo "Created worktree from base branch '$base_branch' for new branch '$branch': $worktree_path"
+        echo "Created worktree from current branch $base_desc for new branch '$branch': $worktree_path"
         _gwt_carry "$main_repo" "$worktree_path" create
         _gwt_submodule_init
         _gwt_codegraph_init_or_sync
