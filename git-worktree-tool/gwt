@@ -253,13 +253,12 @@ gwt() {
     fi
 
     # Decide where to place the new worktree
-    local repo_name branch_dir
+    local repo_name
     repo_name=$(basename "$main_repo")
-    # Keep the full branch name; slashes become underscores for the directory
-    branch_dir="${branch//\//_}"
+    # Use the branch name as-is, so slashes become nested directories
     local worktree_path
-    worktree_path="${GWT_BASE_DIR}/${branch_dir}/${repo_name}"
-    mkdir -p "${GWT_BASE_DIR}/${branch_dir}"
+    worktree_path="${GWT_BASE_DIR}/${branch}/${repo_name}"
+    mkdir -p "${GWT_BASE_DIR}/${branch}"
 
     if [[ -e "$worktree_path" ]]; then
         echo "Error: Path '$worktree_path' already exists but is not a tracked worktree."
