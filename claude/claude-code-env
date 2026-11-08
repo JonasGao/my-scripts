@@ -13,7 +13,7 @@ MARKER="# Claude Code default profile"
 usage() {
 	cat <<EOF
 Usage:
-  $ME run [profile] [-n|--no-skip-permissions] [-- claude_args...]
+  $ME run [profile] [-n|--no-skip-permissions] [-w [name]] [-r [session]] [-- claude_args...]
   $ME list
   $ME add <profile> [--group <group>] [--no-edit] [--force]
   $ME set-group <profile>... <group>
@@ -33,6 +33,8 @@ Commands:
   run          Load a profile and start Claude Code. Uses the default profile when omitted.
                By default Claude Code is started with --dangerously-skip-permissions.
                Pass --no-skip-permissions to disable that behavior.
+               Pass -w [name] to start Claude Code with --worktree [name].
+               Pass -r [session] to resume a session via --resume.
   list         List profiles grouped, mark the default one, and show validity.
   add          Create a profile file and open it in \$EDITOR unless --no-edit is used.
                Use --group to assign an optional display group.
@@ -72,6 +74,9 @@ Examples:
   $ME default work
   $ME init
   $ME run -- --model opus
+  $ME run -w
+  $ME run -w my-worktree
+  $ME run -r
   $ME run --no-skip-permissions
   $ME run personal -- --dangerously-skip-permissions
 EOF
@@ -773,12 +778,31 @@ cmd_run() {
 
 	local profile=""
 	local skip_permissions=1
+	local worktree=0
+	local worktree_name=""
+	local resume_args=()
 	local claude_args=()
 
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
 		-n | --no-skip-permissions)
 			skip_permissions=0
+			shift
+			;;
+		-w | --worktree)
+			worktree=1
+			if [[ $# -ge 2 && ! "$2" =~ ^- ]]; then
+				worktree_name="$2"
+				shift
+			fi
+			shift
+			;;
+		-r | --resume)
+			resume_args=(--resume)
+			if [[ $# -ge 2 && ! "$2" =~ ^- ]]; then
+				resume_args+=("$2")
+				shift
+			fi
 			shift
 			;;
 		--)
@@ -821,11 +845,22 @@ cmd_run() {
 	set +a
 	set -u
 
-	if [[ "$skip_permissions" -eq 1 ]]; then
-		claude_args=("--dangerously-skip-permissions" "${claude_args[@]}")
+	# Construct the claude command arguments
+	local cmd_args=()
+	if [[ "$worktree" -eq 1 ]]; then
+		if [[ -n "$worktree_name" ]]; then
+			cmd_args+=(--worktree "$worktree_name")
+		else
+			cmd_args+=(--worktree)
+		fi
 	fi
+	cmd_args+=("${resume_args[@]+"${resume_args[@]}"}")
+	if [[ "$skip_permissions" -eq 1 ]]; then
+		cmd_args+=(--dangerously-skip-permissions)
+	fi
+	cmd_args+=("${claude_args[@]+"${claude_args[@]}"}")
 
-	exec "$CLAUDE_BIN" "${claude_args[@]}"
+	exec "$CLAUDE_BIN" "${cmd_args[@]}"
 }
 
 main() {

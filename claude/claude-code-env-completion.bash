@@ -27,9 +27,9 @@ _cce_complete() {
 	local profiles_dir
 	profiles_dir="$(_cce_profiles_dir)"
 
-	# First word: complete commands
+	# First word: complete commands and top-level flags
 	if [[ $cword -eq 1 ]]; then
-		mapfile -t COMPREPLY < <(compgen -W 'run list ls add new set-group set-valid edit view show default set-default rm remove delete cp copy rename mv init uninit load path help --help -h' -- "$cur")
+		mapfile -t COMPREPLY < <(compgen -W 'run list ls add new set-group set-valid edit view show default set-default rm remove delete cp copy rename mv init uninit load path help --help -h -w --worktree -r --resume' -- "$cur")
 		return
 	fi
 
@@ -40,22 +40,27 @@ _cce_complete() {
 		# After 'run': complete profile or flags
 		case "$prev" in
 		-n | --no-skip-permissions)
-			mapfile -t COMPREPLY < <(compgen -W '--' -- "$cur")
+			mapfile -t COMPREPLY < <(compgen -W '-w --worktree -r --resume --' -- "$cur")
+			return
+			;;
+		-w | --worktree | -r | --resume)
+			# Optional value for -w/-r is free-form; then more flags
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions -w --worktree -r --resume --" -- "$cur")
 			return
 			;;
 		run)
 			# First arg after 'run': profile or flag
-			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions --" -- "$cur")
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions -w --worktree -r --resume --" -- "$cur")
 			return
 			;;
 		*)
 			# Profile already given, complete flags
 			if [[ -f "$profiles_dir/${prev}.env" ]]; then
-				mapfile -t COMPREPLY < <(compgen -W '-n --no-skip-permissions --' -- "$cur")
+				mapfile -t COMPREPLY < <(compgen -W '-n --no-skip-permissions -w --worktree -r --resume --' -- "$cur")
 				return
 			fi
 			# Complete remaining profiles or flags
-			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions --" -- "$cur")
+			mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions -w --worktree -r --resume --" -- "$cur")
 			return
 			;;
 		esac
@@ -257,7 +262,7 @@ _cce_complete() {
 		;;
 	*)
 		# Unknown command - treat as profile for run
-		mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions --" -- "$cur")
+		mapfile -t COMPREPLY < <(compgen -W "$(_cce_list_profiles) -n --no-skip-permissions -w --worktree -r --resume --" -- "$cur")
 		return
 		;;
 	esac
