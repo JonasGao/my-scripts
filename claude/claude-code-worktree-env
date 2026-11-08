@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ME="$(basename "$0")"
+CCX=ccx
+
+# ccx subcommands that bypass auto -w injection.
+# "run" is NOT listed here: ccxw run ... auto-injects -w.
+_ccx_subcommands="list ls add new edit view show default set-default rm remove delete cp copy rename mv init uninit load path set-group set-valid"
+
+usage() {
+	cat <<EOF
+Usage:
+  $ME [profile] [-n|--no-skip-permissions] [-w [name]] [-r [session]] [-- claude_args...]
+  $ME -w [name] [profile] [-- claude_args...]
+  $ME -r [session] [profile] [-- claude_args...]
+
+A thin wrapper around ccx that adds --worktree (-w) to Claude Code by default.
+
+  ccxw             Equivalent to: ccx -w (default profile in worktree)
+  ccxw personal    Equivalent to: ccx -w run personal
+  ccxw -r sess     Equivalent to: ccx -r sess (resume only, no worktree)
+  ccxw list        Equivalent to: ccx list (pass-through for non-run commands)
+
+When no flag is given, -w is automatically added so the session starts in a
+git worktree. When any flag (-w/-r/-n) is given, arguments are forwarded to
+ccx verbatim so you can combine them freely.
+
+For profile management (add/edit/view/rm/...), use ccx directly.
+
+Environment:
+  CLAUDE_CODE_ENV_DIR  Override ccx config directory.
+  CLAUDE_CODE_BIN      Override Claude Code command. Default: claude
+EOF
+}
+
+case "${1:-}" in
+-h | --help | help)
+	usage
+	exit 0
+	;;
+"")
+	exec "$CCX" -w
+	;;
+-w | --worktree | -r | --resume | -n | --no-skip-permissions)
+	# Flag provided: forward everything to ccx verbatim.
+	exec "$CCX" "$@"
+	;;
+*)
+	# Management subcommand? Pass through unchanged.
+	for sub in $_ccx_subcommands; do
+		if [[ "$1" == "$sub" ]]; then
+			exec "$CCX" "$@"
+		fi
+	done
+	# Otherwise: treat as profile, auto-inject -w.
+	exec "$CCX" -w "$@"
+	;;
+esac
