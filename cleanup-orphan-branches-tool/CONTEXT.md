@@ -91,12 +91,31 @@ upstream tracking, worktree mapping, commit metadata, and Protection reason.
 The scan runs once at startup; the web page renders that single snapshot, so
 deleting a branch does not refresh the table.
 
+### Remote branch
+
+A ref under `refs/remotes/<remote>/` representing a branch on a remote
+repository. Shown alongside local branches when `--all` is active. Remote
+branches are deleted via `git push <remote> --delete <branch>`. The same
+Protection rules apply: trunk names (`master`/`main`/`develop`) and the
+current branch's remote tracking ref cannot be deleted.
+
+### All mode
+
+Activated by `--all` / `-a`. Scans both local and remote branches, presenting
+them in a single numbered list (terminal) or table (web). Users can pick any
+combination of branches to delete — not just orphans. In terminal mode, the
+user enters a selection expression (e.g. `1,3,5-8` or `all`). In web mode,
+all branches appear with checkboxes; remote branches are labeled with their
+`remote/branch` display name.
+
 ## Invariants
 
-- `master` / `main` / `develop` are never deletable through the tool.
-- The currently checked-out branch is never deletable through the tool.
+- `master` / `main` / `develop` are never deletable through the tool (both local and remote).
+- The currently checked-out branch and its remote tracking ref are never deletable through the tool.
 - A Warning never blocks deletion; only Protection does.
 - Every git invocation uses an argument list, never a shell string.
 - All values interpolated into HTML are escaped.
 - A Batch never partially applies a single item: a branch either has both its
   worktree and its ref removed, or a failure is reported for it.
+- Remote branches are deleted via `git push <remote> --delete`, local branches via `git branch -D`.
+- The `--all` mode shows both local and remote branches; without it, only orphan local branches are candidates.

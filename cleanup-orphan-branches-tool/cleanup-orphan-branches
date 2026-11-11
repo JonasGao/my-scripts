@@ -23,6 +23,7 @@ STATUS_LABELS = {
     "gone": "远程已删除",
     "tracking-other": "追踪其他分支",
     "normal": "正常",
+    "remote": "远程分支",
 }
 
 COLOR = {
@@ -56,8 +57,9 @@ def git(repo, *args, timeout=None):
 
 
 class Branch:
-    def __init__(self, name):
+    def __init__(self, name, remote=""):
         self.name = name
+        self.remote = remote  # e.g. "origin"; empty for local branches
         self.upstream = ""
         self.track = ""
         self.ahead = 0
@@ -68,7 +70,7 @@ class Branch:
         self.unpushed = 0
         self.dirty = False
         self.dirty_files = []
-        self.status = "normal"
+        self.status = "remote" if remote else "normal"
         self.protected = ""
 
     def dirty_diff(self, limit=2000):
@@ -107,8 +109,18 @@ class Branch:
         return "\n".join(lines)
 
     @property
+    def is_remote(self):
+        return bool(self.remote)
+
+    @property
     def is_orphan(self):
         return self.status in ("orphan", "gone")
+
+    @property
+    def display_name(self):
+        if self.remote:
+            return f"{self.remote}/{self.name}"
+        return self.name
 
     @property
     def warning(self):
@@ -119,6 +131,7 @@ class Branch:
     def as_dict(self):
         return {
             "name": self.name,
+            "remote": self.remote,
             "upstream": self.upstream,
             "track": self.track,
             "ahead": self.ahead,
@@ -226,8 +239,54 @@ def scan(repo, current_branch):
     return branches
 
 
+def scan_remotes(repo, current_branch):
+    """扫描所有远程分支（refs/remotes/），跳过 HEAD 引用。"""
+    rc, out = git(
+        repo,
+        "for-each-ref",
+        "--format=%(refname:short)%00%(committerdate:iso-strict)%00%(authorname)",
+        "refs/remotes/",
+    )
+    if rc != 0:
+        return []
+
+    branches = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\0")
+        if len(fields) < 3:
+            continue
+        refname, commit_time, author = fields[:3]
+        # Skip HEAD pointers like "origin/HEAD"
+        if refname.endswith("/HEAD"):
+            continue
+        # Parse remote/branch from refname
+        parts = refname.split("/", 1)
+        if len(parts) < 2:
+            continue
+        remote_name = parts[0]
+        branch_name = parts[1]
+
+        b = Branch(branch_name, remote=remote_name)
+        b.commit_time = commit_time
+        b.commit_author = author
+
+        if branch_name in PROTECTED_BRANCHES:
+            b.protected = "主干分支"
+        elif branch_name == current_branch:
+            b.protected = "当前分支"
+
+        branches.append(b)
+
+    branches.sort(key=lambda b: (b.name, b.remote))
+    return branches
+
+
 def deletion_plan(branch, main_worktree, repo):
     """返回该分支要执行的步骤列表（人类可读）。"""
+    if branch.is_remote:
+        return [f"git push {branch.remote} --delete {branch.name}"]
     steps = []
     if branch.worktree and branch.worktree != main_worktree:
         steps.append(f"git worktree remove -f {branch.worktree}")
@@ -237,6 +296,12 @@ def deletion_plan(branch, main_worktree, repo):
 
 def delete_branch(repo, branch, main_worktree):
     """执行删除，返回 (ok, message)。"""
+    if branch.is_remote:
+        rc, out = git(repo, "push", branch.remote, "--delete", branch.name)
+        if rc != 0:
+            return False, out.strip() or "git push --delete 失败"
+        return True, ""
+
     if branch.worktree and branch.worktree != main_worktree:
         path = branch.worktree
         if os.path.isdir(path):
@@ -307,7 +372,155 @@ def cleanable(branches):
     return [b for b in branches if b.is_orphan and not b.protected]
 
 
-def run_terminal(repo, branches, main_worktree, dry_run, color):
+def parse_selection(input_str, max_count):
+    """解析用户输入的选择表达式，如 '1,3,5-8' 或 'all'。返回索引列表（从 0 开始）。"""
+    input_str = input_str.strip()
+    if not input_str:
+        return []
+    if input_str.lower() in ("all", "a"):
+        return list(range(max_count))
+    if input_str.lower() in ("none", "n"):
+        return []
+
+    selected = set()
+    for part in input_str.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            bounds = part.split("-", 1)
+            try:
+                start = int(bounds[0].strip())
+                end = int(bounds[1].strip())
+                for i in range(start, end + 1):
+                    if 1 <= i <= max_count:
+                        selected.add(i - 1)
+            except ValueError:
+                continue
+        else:
+            try:
+                idx = int(part)
+                if 1 <= idx <= max_count:
+                    selected.add(idx - 1)
+            except ValueError:
+                continue
+    return sorted(selected)
+
+
+def run_terminal(repo, branches, main_worktree, dry_run, color, all_mode=False, remote_branches=None):
+    if all_mode and remote_branches is not None:
+        # 交互选择模式：列出所有分支供用户勾选
+        all_branches = branches + remote_branches
+        if not all_branches:
+            print("没有找到任何分支。")
+            return 0
+
+        print(f"共有 {len(all_branches)} 个分支（本地 {len(branches)} + 远程 {len(remote_branches)}）:")
+        print()
+        for i, b in enumerate(all_branches, 1):
+            kind = "远程" if b.is_remote else "本地"
+            label = STATUS_LABELS.get(b.status, b.status)
+            name = b.display_name
+            if b.is_orphan:
+                head = c(f"  {i:>3}. [{kind}] {name}", "green", color)
+            elif b.protected:
+                head = c(f"  {i:>3}. [{kind}] {name}", "dim", color)
+            else:
+                head = f"  {i:>3}. [{kind}] {name}"
+
+            details = [label]
+            if b.upstream:
+                track_parts = []
+                if b.ahead:
+                    track_parts.append(f"↑{b.ahead}")
+                if b.behind:
+                    track_parts.append(f"↓{b.behind}")
+                details.append(b.upstream + (" " + " ".join(track_parts) if track_parts else ""))
+            if b.worktree:
+                details.append(f"worktree: {b.worktree}")
+            if b.commit_time:
+                details.append(b.commit_time[:19].replace("T", " "))
+            if b.unpushed:
+                details.append(f"未推送 {b.unpushed}")
+
+            print(head)
+            if details:
+                print(f"        {c(' | '.join(details), 'dim', color)}")
+            if b.protected:
+                print(f"        {c('保护: ' + b.protected, 'yellow', color)}")
+            if b.warning:
+                print(f"        {c('⚠ ' + b.warning, 'yellow', color)}")
+        print()
+
+        print("输入要删除的分支编号（如 1,3,5-8 或 all），留空取消:")
+        try:
+            answer = input("> ").strip()
+        except EOFError:
+            answer = ""
+
+        if not answer:
+            print("已取消。")
+            return 0
+
+        indices = parse_selection(answer, len(all_branches))
+        if not indices:
+            print("未选择任何分支。")
+            return 0
+
+        targets = [all_branches[i] for i in indices]
+        # 过滤受保护分支
+        skipped = [b for b in targets if b.protected]
+        targets = [b for b in targets if not b.protected]
+
+        if skipped:
+            print()
+            print(c("以下分支受保护，已跳过:", "yellow", color))
+            for b in skipped:
+                print(f"  - {b.display_name} ({b.protected})")
+
+        if not targets:
+            print()
+            print("没有可删除的分支。")
+            return 0
+
+        print()
+        print(f"将删除 {len(targets)} 个分支:")
+        for b in targets:
+            print(f"  - {b.display_name}")
+        print()
+
+        if dry_run:
+            print(c("--dry-run: 以下命令不会执行", "yellow", color))
+            for b in targets:
+                for step in deletion_plan(b, main_worktree, repo):
+                    print(f"  {step}")
+            return 0
+
+        try:
+            confirm = input("确认删除？[y/N] ").strip()
+        except EOFError:
+            confirm = ""
+        print()
+        if confirm.lower() != "y":
+            print("已取消。")
+            return 0
+
+        ok_count = 0
+        failures = []
+        for b in targets:
+            ok, msg = delete_branch(repo, b, main_worktree)
+            if ok:
+                ok_count += 1
+                print(c(f"  ✓ 已删除 {b.display_name}", "green", color))
+            else:
+                failures.append((b.display_name, msg))
+                print(c(f"  ✗ 删除 {b.display_name} 失败: {msg}", "red", color))
+
+        print()
+        print(f"完成: 成功 {ok_count} 个" + (f"，失败 {len(failures)} 个" if failures else ""))
+        return 1 if failures else 0
+
+    # 默认模式：只清理孤儿分支
     orphans = cleanable(branches)
     if not orphans:
         print("没有需要清理的无远程分支的本地分支。")
@@ -394,11 +607,11 @@ PAGE = """<!DOCTYPE html>
 </head>
 <body>
 <h1>清理孤儿分支</h1>
-<div class="sub">{repo_name} · {branch_count} 个本地分支 · {orphan_count} 个待清理</div>
+<div class="sub">{subtitle}</div>
 {result}
 <form method="POST" action="{action}">
 <div class="toolbar">
-  <label><input type="checkbox" id="only-orphan" checked onchange="filterRows()"> 只看孤儿</label>
+  <label><input type="checkbox" id="only-orphan" {filter_checked} onchange="filterRows()"> 只看孤儿</label>
   <span class="muted" id="counter"></span>
 </div>
 <table>
@@ -448,8 +661,8 @@ updateCounter();
 """
 
 ROW = """<tr class="{row_class}" data-orphan="{is_orphan}">
-<td><input type="checkbox" name="branch" value="{name}" {checked} {disabled}></td>
-<td class="mono">{name}</td>
+<td><input type="checkbox" name="branch" value="{display_name}" {checked} {disabled}></td>
+<td class="mono">{display_name}</td>
 <td><span class="chip {status}">{status_label}</span></td>
 <td class="mono muted">{upstream}</td>
 <td class="mono muted">{worktree}</td>
@@ -458,7 +671,11 @@ ROW = """<tr class="{row_class}" data-orphan="{is_orphan}">
 </tr>"""
 
 
-def render_page(repo, branches, result_html="", dry_run=False):
+def render_page(repo, branches, result_html="", dry_run=False, all_mode=False, remote_count=0):
+    if all_mode:
+        subtitle = f"{html.escape(os.path.basename(repo))} · {len(branches) - remote_count} 个本地分支 · {remote_count} 个远程分支 · {len(cleanable([b for b in branches if not b.is_remote]))} 个孤儿待清理"
+    else:
+        subtitle = f"{html.escape(os.path.basename(repo))} · {len(branches)} 个本地分支 · {len(cleanable(branches))} 个待清理"
     rows = []
     for b in branches:
         show_upstream = html.escape(b.upstream)
@@ -484,7 +701,7 @@ def render_page(repo, branches, result_html="", dry_run=False):
             ROW.format(
                 row_class="orphan" if b.is_orphan else ("protected" if b.protected else ""),
                 is_orphan="1" if b.is_orphan else "0",
-                name=html.escape(b.name),
+                display_name=html.escape(b.display_name),
                 checked="checked" if (b.is_orphan and not b.protected) else "",
                 disabled="disabled" if b.protected else "",
                 status=html.escape(b.status),
@@ -498,8 +715,10 @@ def render_page(repo, branches, result_html="", dry_run=False):
 
     return PAGE.format(
         repo_name=html.escape(os.path.basename(repo)),
-        branch_count=len(branches),
-        orphan_count=len(cleanable(branches)),
+        subtitle=subtitle,
+        branch_count=len([b for b in branches if not b.is_remote]),
+        orphan_count=len(cleanable([b for b in branches if not b.is_remote])),
+        filter_checked="" if all_mode else "checked",
         rows="\n".join(rows),
         result=result_html,
         action="/delete" if not dry_run else "/preview",
@@ -601,8 +820,8 @@ def render_diff_page(branch):
 """
 
 
-def make_handler(repo, branches, main_worktree, dry_run, state):
-    by_name = {b.name: b for b in branches}
+def make_handler(repo, branches, main_worktree, dry_run, state, all_mode=False, remote_count=0):
+    by_name = {b.display_name: b for b in branches}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -630,7 +849,7 @@ def make_handler(repo, branches, main_worktree, dry_run, state):
             if parsed.path != "/":
                 self._send(404, "not found", "text/plain; charset=utf-8")
                 return
-            self._send(200, render_page(repo, branches, dry_run=dry_run))
+            self._send(200, render_page(repo, branches, dry_run=dry_run, all_mode=all_mode, remote_count=remote_count))
 
         def do_POST(self):
             if state["done"]:
@@ -657,19 +876,19 @@ def make_handler(repo, branches, main_worktree, dry_run, state):
                 if b is None:
                     continue
                 if b.protected:
-                    print(f"跳过受保护分支: {name} ({b.protected})", file=sys.stderr)
+                    print(f"跳过受保护分支: {b.display_name} ({b.protected})", file=sys.stderr)
                     continue
                 targets.append(b)
 
             if not targets:
-                self._send(200, render_page(repo, branches, '<div class="result warn">未选择任何可删除的分支</div>', dry_run))
+                self._send(200, render_page(repo, branches, '<div class="result warn">未选择任何可删除的分支</div>', dry_run, all_mode, remote_count))
                 return
 
             state["done"] = True
 
             if dry_run:
-                items = [(b.name, deletion_plan(b, main_worktree, repo)) for b in targets]
-                self._send(200, render_page(repo, branches, render_result(items, True), dry_run))
+                items = [(b.display_name, deletion_plan(b, main_worktree, repo)) for b in targets]
+                self._send(200, render_page(repo, branches, render_result(items, True), dry_run, all_mode, remote_count))
                 print()
                 print(c("预览（未执行）:", "yellow"))
                 for name, steps in items:
@@ -684,11 +903,11 @@ def make_handler(repo, branches, main_worktree, dry_run, state):
             for b in targets:
                 steps = deletion_plan(b, main_worktree, repo)
                 ok, msg = delete_branch(repo, b, main_worktree)
-                items.append((b.name, ok, msg))
+                items.append((b.display_name, ok, msg))
                 mark = c("✓", "green") if ok else c("✗", "red")
-                print(f"  {mark} {b.name}" + (f" — {msg}" if msg else ""))
+                print(f"  {mark} {b.display_name}" + (f" — {msg}" if msg else ""))
 
-            self._send(200, render_page(repo, branches, render_result(items, False), dry_run))
+            self._send(200, render_page(repo, branches, render_result(items, False), dry_run, all_mode, remote_count))
 
             ok_count = sum(1 for _, success, _ in items if success)
             failed = [(n, m) for n, success, m in items if not success]
@@ -730,16 +949,21 @@ def bind_server(bind_addr, port, handler):
     return srv, srv.server_address[1]
 
 
-def run_web(repo, branches, main_worktree, bind_addr, port, dry_run, color):
-    orphans = cleanable(branches)
-    if not orphans:
-        print("没有需要清理的无远程分支的本地分支。")
-        print()
-        print(c("提示: 有上游但没有 worktree 的 feature 分支可能已合并，可手动检查。", "dim", color))
-        return 0
+def run_web(repo, branches, main_worktree, bind_addr, port, dry_run, color, all_mode=False, remote_branches=None):
+    if all_mode and remote_branches is not None:
+        all_branches = branches + remote_branches
+    else:
+        orphans = cleanable(branches)
+        if not orphans:
+            print("没有需要清理的无远程分支的本地分支。")
+            print()
+            print(c("提示: 有上游但没有 worktree 的 feature 分支可能已合并，可手动检查。", "dim", color))
+            return 0
+        all_branches = branches
 
     state = {"done": False, "exit": 0}
-    handler = make_handler(repo, branches, main_worktree, dry_run, state)
+    remote_count = len(remote_branches) if remote_branches else 0
+    handler = make_handler(repo, all_branches, main_worktree, dry_run, state, all_mode, remote_count)
     server, actual_port = bind_server(bind_addr, port, handler)
 
     print()
@@ -773,6 +997,7 @@ def main():
   cleanup-orphan-branches ~/repo --web     # 指定仓库，网页操作
   cleanup-orphan-branches --web --port 8080 --bind 192.168.1.10
   cleanup-orphan-branches --dry-run        # 只预览，不执行
+  cleanup-orphan-branches --all            # 列出所有本地和远程分支供选择删除
 """,
     )
     parser.add_argument("repo", nargs="?", default=".", help="仓库路径（默认当前目录）")
@@ -781,6 +1006,7 @@ def main():
     parser.add_argument("--port", type=int, default=0, help="Web 服务端口（默认随机）")
     parser.add_argument("--bind", default="0.0.0.0", help="Web 服务绑定地址（默认 0.0.0.0）")
     parser.add_argument("--no-fetch", action="store_true", help="跳过启动时的 git fetch --prune")
+    parser.add_argument("--all", "-a", action="store_true", help="列出所有本地和远程分支供选择删除（而非仅孤儿分支）")
     args = parser.parse_args()
 
     color = sys.stdout.isatty()
@@ -809,14 +1035,26 @@ def main():
     print("检查本地分支状态...")
     print()
     branches = scan(repo, current_branch)
+    
+    remote_branches = None
+    if args.all:
+        print("检查远程分支状态...")
+        remote_branches = scan_remotes(repo, current_branch)
+        print(f"发现 {len(remote_branches)} 个远程分支")
+        print()
+    
     print_branch_table(branches, color)
+    if args.all and remote_branches:
+        print()
+        print("远程分支:")
+        print_branch_table(remote_branches, color)
     print()
 
     _, main_worktree = worktree_map(repo)
 
     if args.web:
-        return run_web(repo, branches, main_worktree, args.bind, args.port, args.dry_run, color)
-    return run_terminal(repo, branches, main_worktree, args.dry_run, color)
+        return run_web(repo, branches, main_worktree, args.bind, args.port, args.dry_run, color, args.all, remote_branches)
+    return run_terminal(repo, branches, main_worktree, args.dry_run, color, args.all, remote_branches)
 
 
 if __name__ == "__main__":

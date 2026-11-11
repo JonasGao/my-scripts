@@ -17,6 +17,7 @@ cleanup-orphan-branches                  # 当前仓库，终端交互
 cleanup-orphan-branches ~/repo           # 指定仓库
 cleanup-orphan-branches --web            # 网页勾选删除
 cleanup-orphan-branches --dry-run        # 只列出将要执行的命令
+cleanup-orphan-branches --all            # 列出所有本地和远程分支供选择删除
 ```
 
 ### 选项
@@ -28,6 +29,7 @@ cleanup-orphan-branches --dry-run        # 只列出将要执行的命令
 | `--port N` | 指定 Web 端口。被占用时自动回落随机端口并打印实际端口 |
 | `--bind ADDR` | Web 绑定地址，默认 `0.0.0.0`（局域网可达） |
 | `--no-fetch` | 跳过启动时的 `git fetch --prune`（默认执行，15 秒超时后按本地状态判定） |
+| `--all`, `-a` | 列出所有本地和远程分支供选择删除（而非仅孤儿分支） |
 
 ## 判定规则
 
@@ -37,6 +39,44 @@ cleanup-orphan-branches --dry-run        # 只列出将要执行的命令
 | 远程已删除 | upstream 配置还在，但远程分支已删（`[gone]`） | 是 |
 | 追踪其他分支 | upstream 名与本地名不同 | 否 |
 | 正常 | 有 upstream 且存在 | 否 |
+| 远程分支 | 远程跟踪分支（`refs/remotes/`） | 可手动删除 |
+
+## --all 模式：选择任意分支删除
+
+默认模式只列出孤儿分支（远程已不存在的本地分支）。加 `--all` 或 `-a` 后，工具会同时扫描本地分支和所有远程分支，列出完整清单供你选择删除。
+
+### 终端模式
+
+```
+共有 15 个分支（本地 8 + 远程 7）:
+
+    1. [本地] feature-abc
+        无上游 | worktree: /path/to/worktree | 2024-01-15 10:30:00
+    2. [本地] feature-xyz
+        远程已删除
+    3. [远程] origin/feature-abc
+        远程分支 | 2024-01-14 18:20:00
+    ...
+
+输入要删除的分支编号（如 1,3,5-8 或 all），留空取消:
+> 
+```
+
+支持的选择语法：
+- 单个编号：`3`
+- 多个编号：`1,3,7`
+- 范围：`5-10`
+- 混合：`1,3,5-8,12`
+- 全选：`all`
+- 取消：留空回车
+
+### Web 模式
+
+`--all --web` 时页面会同时显示本地和远程分支，远程分支行的分支名带 `remote/branch` 前缀。受保护的分支同样置灰不可勾选。
+
+### 远程分支删除
+
+远程分支通过 `git push <remote> --delete <branch>` 删除，而非 `git branch -D`。保护规则对远程分支同样生效：`master`/`main`/`develop` 和当前分支的远程跟踪引用不可删除。
 
 ### 保护规则
 
@@ -92,10 +132,14 @@ Web 服务已启动
 
 ## 删除动作
 
-每个分支按顺序执行：
+本地分支按顺序执行：
 
 1. 若有独立 worktree：`git worktree remove -f <path>`；失败则 `rm -rf` + `git worktree prune`
 2. `git branch -D <name>`
+
+远程分支执行：
+
+- `git push <remote> --delete <branch>`
 
 一律用 `-D`（强制）。保护规则已经拦掉了会丢数据的分支，剩下的删除是用户明确勾选的结果。
 
